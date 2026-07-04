@@ -1,0 +1,42 @@
+# 密钥与本地配置
+.env
+.env.*
+!.env.example
+
+# 运行产物与工作区
+output/
+.paper_workspaces/
+.paper_ws_*/
+
+# 追踪落盘（agent-observability-tracing）
+traces/
+
+# hypothesis 属性测试示例数据库（本地缓存，不入库）
+.hypothesis/
+
+# 本地编辑器 / 工具设置
+.claude/
+
+# 个人笔记与临时文件（不入公开仓库；如需分享请单独处理）
+problem/
+问题清单.md
+ir.txt
+
+
+# 测试/运行遗留在仓库根的产物（hex 命名的工作区导出物）——兜底，防污染
+/[0-9a-f]*.md
+/[0-9a-f]*.json
+/[0-9a-f]*.tex
+/[0-9a-f]*.bib
+/[0-9a-f]*.docx
+/[0-9a-f]*_assets/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.venv/
+venv/
+build/
+dist/

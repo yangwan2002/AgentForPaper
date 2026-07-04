@@ -1,0 +1,51 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "paper-agent"
+version = "0.1.0"
+description = "面向学术论文写作的多智能体协作系统"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = []
+
+# NOTE: 外部系统可执行程序（非 pip 依赖 / NOT pip dependencies）
+# ---------------------------------------------------------------------------
+# 本项目的格式导出管线（LaTeX/docx 转换）与可选的编译检查依赖以下
+# **外部系统二进制程序**，它们并非 Python 包，无法通过 pip 安装，因此
+# 不会、也不应出现在下方的 [project.optional-dependencies] 或 dependencies 中：
+#
+#   * pandoc   —— LaTeX / docx 转换所必需。请从 https://pandoc.org 下载并
+#                安装适配你操作系统的发行版，安装后确保 `pandoc` 在 PATH 中
+#                （可用 `pandoc --version` 验证）。
+#   * pdflatex —— 可选，用于格式闸（Format_Gate）的 PDF 编译检查（仅当
+#                enable_pdflatex_check=True 时启用）。请安装一个 TeX 发行版，
+#                例如 TeX Live（https://www.tug.org/texlive/）或 MiKTeX
+#                （https://miktex.org/），安装后确保 `pdflatex` 在 PATH 中。
+#
+# 降级行为：当 PATH 中缺少 pandoc 时，系统默认降级到内置渲染器
+# （pandoc_degrade_strategy="fallback"），仍可产出 Markdown 及回退版的
+# LaTeX/docx；若配置为 pandoc_degrade_strategy="fail_fast"，则对应格式会以
+# 带上述安装指引的错误信息失败。
+#
+# 请勿将 pandoc / pdflatex 添加为 pip 依赖项。
+# ---------------------------------------------------------------------------
+[project.optional-dependencies]
+api = ["httpx>=0.27"]
+llm = ["openai>=1.0"]
+anthropic = ["anthropic>=0.40"]
+pdf = ["PyMuPDF>=1.24", "pypdf>=4.0"]
+docx = ["python-docx>=1.1"]
+tokenizer = ["tiktoken>=0.7"]
+artifact = ["pyyaml>=6.0"]
+figures = ["matplotlib>=3.5"]
+dev = ["pytest>=8.0", "hypothesis>=6.0", "pyyaml>=6.0", "python-docx>=1.1", "matplotlib>=3.5"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+addopts = "-q"

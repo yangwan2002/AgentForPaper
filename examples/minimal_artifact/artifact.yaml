@@ -1,0 +1,51 @@
+research_question: |
+  如何在大视角差（空对地）下做高鲁棒性的图像匹配？
+
+method:
+  overview: |
+    在 OETR baseline 上，引入 cross-view consistency loss 与
+    attention reweighting 模块——前者对空地视角的几何不变性做软约束，
+    后者降低视角差较大时无关 patch 的注意力权重。
+  key_components:
+    - "OETR baseline（保持不变）"
+    - "Cross-view attention reweighting 模块"
+    - "Cross-view consistency loss L_cv"
+  formal_definition: |
+    L_cv = sum_i ||f(I_a^i) - f(I_g^i)||_2^2
+  pseudocode: |
+    for batch in loader:
+      f_a = encoder(batch.aerial)
+      f_g = encoder(batch.ground)
+      L = L_match + lambda * L_cv(f_a, f_g)
+      L.backward()
+
+contributions:
+  - summary: "首次将 cross-view consistency 引入空地匹配，相对 OETR 提升 8.3% mAP"
+    evidence_refs: ["main"]
+  - summary: "提出 attention reweighting，缓解大视角差下的无关注意力"
+    evidence_refs: ["main", "ablation_attention"]
+  - summary: "在 University-1652 数据集上达到当前 SOTA"
+    evidence_refs: ["main"]
+
+experiments:
+  - experiment_id: main
+    dataset: University-1652
+    baselines: [OETR, LPN, FSRA]
+    metrics: [mAP, Recall_at_1]
+    hyperparameters:
+      lr: 0.0001
+      batch_size: 32
+      optimizer: AdamW
+      epochs: 100
+      lambda_cv: 0.5
+    seed: 42
+    hardware: "4x RTX 3090, 24h"
+    results_csv: experiments/main.csv
+
+code_repository: "https://github.com/example/cross-view-matching"
+
+novelty_claims:
+  - "cross-view consistency loss 在空地匹配任务上属首次使用"
+  - "attention reweighting 在视角差 > 60° 场景下稳定提升"
+
+must_cite_refs: []

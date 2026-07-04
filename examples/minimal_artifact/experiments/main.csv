@@ -1,0 +1,5 @@
+method,mAP,Recall_at_1,seed
+OETR,72.3,86.1,42
+LPN,73.5,87.4,42
+FSRA,75.1,88.9,42
+Ours,83.4,93.2,42
