@@ -291,11 +291,19 @@ def check_typesetting_applied(docx_path: str, spec) -> AcceptanceFinding:
             healable=False,
         )
 
+    try:
+        from paper_agent.export.docx_structural import style_is_protected
+    except Exception:  # noqa: BLE001 - 无该模块时退化为仅按名跳过标题
+        style_is_protected = None
+
     mismatches: list[str] = []
     body_paras = [p for p in document.paragraphs if (p.text or "").strip()]
     checked = 0
     for para in body_paras:
-        # 标题段落（Heading 样式）不受正文排版约束，跳过。
+        # 结构型段落（标题/题注/参考文献等）不受正文排版约束，跳过——与 apply_typesetting
+        # 的跳过口径一致，避免把参考文献的悬挂缩进/单倍行距误判为"正文排版未应用"。
+        if style_is_protected is not None and style_is_protected(para):
+            continue
         style_name = getattr(getattr(para, "style", None), "name", "") or ""
         if style_name.lower().startswith("heading") or style_name.startswith("标题"):
             continue

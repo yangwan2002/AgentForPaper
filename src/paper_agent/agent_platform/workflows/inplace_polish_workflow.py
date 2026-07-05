@@ -48,8 +48,11 @@ class InplacePolishWorkflow:
 
     intent = Intent.INPLACE_POLISH
 
-    def __init__(self, llm: LLMProvider) -> None:
+    def __init__(self, llm: LLMProvider, *, auditor=None) -> None:
         self._llm = llm
+        # 可选只读审计旁路（inplace-polish-audit）：非空时润色产物生成后附一份
+        # 文献真伪 + 引用忠实性的建议报告；None 时行为与本特性引入前逐字节一致。
+        self._auditor = auditor
 
     def run(self, ctx: ToolContext, params: dict) -> WorkflowResult:
         params = params or {}
@@ -82,7 +85,20 @@ class InplacePolishWorkflow:
         if not files:
             # 处理器未产出文件 → 失败，把其返回文本作为原因诚实上报。
             return WorkflowResult(ok=False, unresolved=[text])
-        return WorkflowResult(ok=True, files=files, notes=[text])
+
+        notes = [text]
+        # 只读审计旁路：产物已生成后运行，只读原稿、只追加建议，不改产物、不翻转 ok。
+        # audit 自身绝不抛出；此处再包一层防御，审计异常绝不连累润色交付（Property 5）。
+        if self._auditor is not None:
+            try:
+                report = self._auditor.audit(src)
+                rendered = report.render()
+                if rendered:
+                    notes.append(rendered)
+            except Exception as exc:  # noqa: BLE001 - 审计异常不影响润色产物
+                notes.append(f"（文献/引用审计未完成：{type(exc).__name__}）")
+
+        return WorkflowResult(ok=True, files=files, notes=notes)
 
 
 def _produced_files(ctx: ToolContext, before: int) -> list[str]:

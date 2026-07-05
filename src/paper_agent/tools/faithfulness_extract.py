@@ -23,7 +23,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 
-from paper_agent.tools.quality_gate import _TEXT_CITATION, _is_doc_type_marker
+from paper_agent.tools.quality_gate import _TEXT_CITATION, _is_non_citation_marker
 from paper_agent.workspace.faithfulness import ClaimCitationPair
 
 # 句子边界字符：CJK 句末标点 + ASCII 句末标点 + 换行/回车（Req 1.3）。
@@ -138,9 +138,9 @@ def extract_pairs(
 
     for match in _TEXT_CITATION.finditer(content):
         ref_id = match.group(1)
-        # 与 extract_text_citations 复用同一排除规则：GB/T 7714 文献类型标识
-        # （[J]/[C]/[M] 等）不是引用编号，两处必须一致（扫描规则复用一致性）。
-        if _is_doc_type_marker(ref_id):
+        # 与 extract_text_citations 复用同一排除规则：GB/T 7714 著录类型标识（[J]/[C]/[M]
+        # 等）与 LaTeX 交叉引用标签（[eq:..]/[tab:..] 等）都不是引用编号，三处必须一致。
+        if _is_non_citation_marker(ref_id):
             continue
         sentence = _find_enclosing_sentence(sentences, match.start())
 

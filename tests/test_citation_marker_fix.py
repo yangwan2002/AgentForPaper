@@ -30,3 +30,21 @@ def test_lowercase_or_mixed_not_excluded():
     # 含小写/数字的 key 不是著录标记，应保留。
     text = "见 [RoMa] 与 [a1]。"
     assert extract_text_citations(text) == ["RoMa", "a1"]
+
+
+def test_latex_ref_labels_not_treated_as_citations():
+    # \ref{eq:..}/\ref{tab:..} 抽成文本后的 [eq:..]/[tab:..] 是交叉引用标签，非文献引用。
+    text = "式 [eq:relay_chain] 表明，如表 [tab:mask_tier] 所示，见图 [fig:overview]。"
+    assert extract_text_citations(text) == []
+
+
+def test_latex_ref_labels_mixed_with_real_citations():
+    # LaTeX 标签剔除，真实文献引用保留。
+    text = "如式 [eq:main] 与文献 [12] 所述，见 [Smith2020]。"
+    assert extract_text_citations(text) == ["12", "Smith2020"]
+
+
+def test_arxiv_style_colon_id_still_kept():
+    # arxiv: 前缀不在 LaTeX 标签前缀集内，真实带冒号引用应保留（不误伤）。
+    text = "见预印本 [arxiv:1706.03762] 与章节标签 [sec:intro]。"
+    assert extract_text_citations(text) == ["arxiv:1706.03762"]

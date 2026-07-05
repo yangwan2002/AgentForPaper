@@ -168,16 +168,47 @@ class DocxExporter:
 
         if refs:
             self._add_heading(document, "参考文献", 1, conventions)
-            for r in refs:
-                authors = ", ".join(r.authors)
-                year = r.year if r.year is not None else "n.d."
-                document.add_paragraph(
-                    f"{ref_index[r.id]}. {authors} ({year}). {r.title}. "
-                    f"{r.source}:{r.source_id}"
-                )
+            self._add_references(document, refs, ref_index)
 
         self._atomic_save(document, path)
         return ExportResult(output_format=self.format, files=[path], notes=notes)
+
+    @staticmethod
+    def _ensure_reference_style(document):
+        """确保存在名为「参考文献」的段落样式并返回它（失败返回 None）。
+
+        参考文献段落套用此样式后即被 ``style_is_protected`` 识别为结构段，故正文排版
+        （``apply_typesetting`` 的对齐/行距/首行缩进）不会覆盖其悬挂缩进+单倍行距。
+        """
+        from docx.enum.style import WD_STYLE_TYPE
+
+        name = "参考文献"
+        styles = document.styles
+        for style in styles:
+            if style.name == name:
+                return style
+        try:
+            style = styles.add_style(name, WD_STYLE_TYPE.PARAGRAPH)
+            style.base_style = styles["Normal"]
+            return style
+        except Exception:  # noqa: BLE001 - 样式创建失败不阻断导出（退化为无专用样式）
+            return None
+
+    def _add_references(self, document, refs, ref_index) -> None:
+        """追加参考文献段落，套用学术标准格式：悬挂缩进 + 单倍行距（复用排版原语）。"""
+        from paper_agent.export.typesetting import format_reference_paragraph
+
+        style = self._ensure_reference_style(document)
+        for r in refs:
+            authors = ", ".join(r.authors)
+            year = r.year if r.year is not None else "n.d."
+            para = document.add_paragraph(
+                f"{ref_index[r.id]}. {authors} ({year}). {r.title}. "
+                f"{r.source}:{r.source_id}"
+            )
+            if style is not None:
+                para.style = style
+            format_reference_paragraph(para)
 
     @staticmethod
     def _atomic_save(document, path: str) -> None:
@@ -273,13 +304,7 @@ class DocxExporter:
 
         if refs:
             self._add_heading(document, "参考文献", 1, conventions)
-            for r in refs:
-                authors = ", ".join(r.authors)
-                year = r.year if r.year is not None else "n.d."
-                document.add_paragraph(
-                    f"{ref_index[r.id]}. {authors} ({year}). {r.title}. "
-                    f"{r.source}:{r.source_id}"
-                )
+            self._add_references(document, refs, ref_index)
 
         path = os.path.join(out_dir, f"{ws.workspace_id}.docx")
         self._atomic_save(document, path)

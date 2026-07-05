@@ -36,6 +36,19 @@ _PLACEHOLDER = re.compile(
 _TEXT_CITATION = re.compile(r"\[([A-Za-z0-9_.:\-]+)\]")
 
 
+# LaTeX 交叉引用标签前缀：``\ref{eq:..}`` / ``\label{tab:..}`` 等经文本抽取后会残留成
+# ``[eq:..]`` / ``[tab:..]``，是**公式/图表/章节**的交叉引用，不是文献引用编号。识别规则
+# 为"形如 prefix:name 且 prefix ∈ 该集合"，故真实带冒号引用（如 ``[arxiv:1706]``）因
+# arxiv 不在集内不受影响。全小写比对，大小写不敏感。
+_LATEX_REF_PREFIXES = frozenset({
+    "eq", "eqn", "equation", "tab", "table", "fig", "figure", "sec", "section",
+    "subsec", "subsection", "alg", "algorithm", "thm", "theorem", "lem", "lemma",
+    "def", "definition", "cor", "corollary", "prop", "proposition", "app",
+    "appendix", "chap", "chapter", "lst", "listing", "line", "item", "rem",
+    "remark", "assumption", "asm", "ex", "example", "part", "step", "fig",
+})
+
+
 def _is_doc_type_marker(cid: str) -> bool:
     """判断 ``[cid]`` 是否为 GB/T 7714 文献类型标识（``[J]`` 期刊 / ``[C]`` 会议 /
     ``[M]`` 专著 / ``[D]`` 学位论文 / ``[EB]`` 电子公告 等），而非真实引用编号。
@@ -47,16 +60,39 @@ def _is_doc_type_marker(cid: str) -> bool:
     return len(cid) <= 2 and cid.isalpha() and cid.isupper()
 
 
+def _is_latex_ref_label(cid: str) -> bool:
+    """判断 ``[cid]`` 是否为 LaTeX 交叉引用标签（如 ``[eq:relay_chain]`` /
+    ``[tab:mask_tier]`` / ``[fig:overview]``），而非文献引用编号。
+
+    这类是 ``\\ref{eq:..}`` / ``\\eqref{..}`` / ``\\label{..}`` 经文本抽取后残留的方括号，
+    识别规则：形如 ``prefix:name`` 且 ``prefix`` ∈ :data:`_LATEX_REF_PREFIXES`（大小写
+    不敏感）。真实带冒号引用（如 ``[arxiv:1706]``）因前缀不在集内不受影响。
+    """
+    if ":" not in cid:
+        return False
+    prefix = cid.split(":", 1)[0].strip().lower()
+    return prefix in _LATEX_REF_PREFIXES
+
+
+def _is_non_citation_marker(cid: str) -> bool:
+    """``[cid]`` 是否为**非文献引用**的方括号标记（著录类型标识或 LaTeX 交叉引用标签）。
+
+    引用扫描（质量闸/护栏审计/忠实性核验）统一复用本规则，保证"什么算引用"三处一致。
+    """
+    return _is_doc_type_marker(cid) or _is_latex_ref_label(cid)
+
+
 def extract_text_citations(content: str) -> list[str]:
     """抽取正文里所有 ``[id]`` 形式的引用标注 id（保持出现顺序，去重）。
 
-    排除 GB/T 7714 文献类型标识（``[J]`` / ``[C]`` / ``[M]`` 等）——它们是中文著录
-    格式的一部分，不是引用编号，否则会被护栏误判为"未核验引用"。
+    排除**非文献引用**的方括号：GB/T 7714 著录类型标识（``[J]`` / ``[C]`` / ``[M]`` 等）
+    与 LaTeX 交叉引用标签（``[eq:..]`` / ``[tab:..]`` / ``[fig:..]`` 等）——它们不是引用
+    编号，否则会被护栏/收尾验收误判为"未核验的悬空引用"。
     """
     seen: list[str] = []
     for m in _TEXT_CITATION.finditer(content or ""):
         cid = m.group(1)
-        if _is_doc_type_marker(cid):
+        if _is_non_citation_marker(cid):
             continue
         if cid not in seen:
             seen.append(cid)

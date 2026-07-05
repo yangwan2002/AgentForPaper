@@ -79,6 +79,12 @@ class Config:
     # 固定任务执行前回显确认的置信阈值：低于此值走澄清（让用户在候选意图里选）。
     routing_confidence_threshold: float = 0.75
 
+    # 保格式润色的只读审计旁路（inplace-polish-audit）：开启后 InplacePolishWorkflow
+    # 在产出润色稿的同时，对原稿只读审计——核验已有参考文献真伪 + 引用忠实性，附一份
+    # 建议性问题清单。只读、隔离、故障隔离；mock/无检索 provider 下自动降级为「不可核验」
+    # 报告，不崩溃、不阻断润色。默认开启；关闭时润色行为逐字节不变。
+    inplace_audit_enabled: bool = True
+
     llm_provider: str = "mock"
     llm_model: str = ""
     llm_base_url: str | None = None

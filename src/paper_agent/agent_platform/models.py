@@ -222,18 +222,23 @@ class Typesetting:
     - ``alignment``：对齐方式，取值见 ``ALIGNMENT_VALUES``。
     - ``first_line_indent``：首行缩进（如 ``"2ch"`` / 磅值字符串，交由导出器解释）。
     - ``font``：正文字体名。
+    - ``columns``：分栏数（节级排版原语；如 2 表示双栏，小论文常用）。1/None 表示单栏/未指定。
     """
 
     line_spacing: float | None = None
     alignment: str | None = None
     first_line_indent: str | None = None
     font: str | None = None
+    columns: int | None = None
 
     def is_empty(self) -> bool:
         """是否所有字段都「未指定」（此时导出器完全走默认行为）。"""
         return all(
             v is None
-            for v in (self.line_spacing, self.alignment, self.first_line_indent, self.font)
+            for v in (
+                self.line_spacing, self.alignment, self.first_line_indent,
+                self.font, self.columns,
+            )
         )
 
     def to_dict(self) -> dict:
@@ -247,6 +252,8 @@ class Typesetting:
             data["first_line_indent"] = self.first_line_indent
         if self.font is not None:
             data["font"] = self.font
+        if self.columns is not None:
+            data["columns"] = self.columns
         return data
 
     @classmethod
@@ -258,11 +265,20 @@ class Typesetting:
             # 防御式：非法对齐值视为未指定，不因脏数据破坏导出。
             alignment = None
         line_spacing = data.get("line_spacing")
+        columns = data.get("columns")
+        try:
+            # 防御式：分栏数须为 >=1 的整数，否则视为未指定（不因脏数据破坏导出）。
+            columns = int(columns) if columns is not None else None
+            if columns is not None and columns < 1:
+                columns = None
+        except (TypeError, ValueError):
+            columns = None
         return cls(
             line_spacing=float(line_spacing) if line_spacing is not None else None,
             alignment=alignment,
             first_line_indent=data.get("first_line_indent"),
             font=data.get("font"),
+            columns=columns,
         )
 
 

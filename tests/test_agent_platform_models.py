@@ -147,5 +147,21 @@ def test_typesetting_from_dict_rejects_invalid_alignment():
     assert ts.alignment is None
 
 
+def test_typesetting_columns_roundtrip_and_is_empty():
+    # columns 是一等排版原语：非空时 is_empty=False，序列化往返一致。
+    ts = Typesetting(columns=2)
+    assert ts.is_empty() is False
+    assert ts.to_dict() == {"columns": 2}
+    assert Typesetting.from_dict(ts.to_dict()) == ts
+
+
+def test_typesetting_from_dict_rejects_invalid_columns():
+    # 防御式：非整数/小于 1 的分栏数视为未指定，不因脏数据破坏导出。
+    assert Typesetting.from_dict({"columns": 0}).columns is None
+    assert Typesetting.from_dict({"columns": -3}).columns is None
+    assert Typesetting.from_dict({"columns": "abc"}).columns is None
+    assert Typesetting.from_dict({"columns": 2}).columns == 2
+
+
 def test_typesetting_alignment_values_constant():
     assert set(ALIGNMENT_VALUES) == {"left", "center", "right", "justify"}

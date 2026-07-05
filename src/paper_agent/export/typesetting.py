@@ -48,11 +48,74 @@ def _parse_indent_pt(value: str) -> float | None:
         return None
 
 
+def apply_columns(docx_path: str, columns: int) -> int:
+    """把 docx 所有 section 设为 ``columns`` 栏（节级排版原语），返回受影响的 section 数。
+
+    这是"分栏"这一可组合排版原语的**单一实现**：操作 ``sectPr`` 的 ``w:cols num``。
+    转换产物（``convert_document``）与就地排版（``polish_docx_inplace`` / set_typesetting）
+    共用它，避免逻辑重复、保证行为一致。``columns<=1`` 视为单栏（清 num=1）。
+
+    幂等、防御式：python-docx 不可用时抛 ``RuntimeError``（与 DocxExporter 一致）。
+    """
+    try:
+        import docx  # noqa: WPS433
+        from docx.oxml import OxmlElement
+        from docx.oxml.ns import qn
+    except ImportError as exc:  # pragma: no cover - 环境相关
+        raise RuntimeError(
+            "apply_columns 需要 python-docx，请安装：pip install '.[docx]'"
+        ) from exc
+
+    num = max(1, int(columns))
+    document = docx.Document(docx_path)
+    affected = 0
+    for section in document.sections:
+        sect_pr = section._sectPr
+        cols = sect_pr.find(qn("w:cols"))
+        if cols is None:
+            cols = OxmlElement("w:cols")
+            sect_pr.append(cols)
+        cols.set(qn("w:num"), str(num))
+        affected += 1
+    document.save(docx_path)
+    return affected
+
+
+# 参考文献段落悬挂缩进磅值（约 2 字符宽，容纳 "[12] " / "12. " 这类编号前缀）。
+REFERENCE_HANGING_INDENT_PT = 21.0
+
+
+def format_reference_paragraph(
+    paragraph,
+    *,
+    hanging_indent_pt: float = REFERENCE_HANGING_INDENT_PT,
+    single_spacing: bool = True,
+) -> None:
+    """把一个参考文献段落设为学术标准格式：**悬挂缩进 + 单倍行距**（可组合排版原语）。
+
+    悬挂缩进 = 左缩进 ``hanging_indent_pt`` + **首行负缩进**同值——使编号首行顶格、续行
+    相对缩进，形成"悬挂"效果（GB/T 7714 与多数会议模板的参考文献表标准排版）。
+
+    与正文排版原语（对齐/行距/分栏）正交：本原语只作用于传入的参考文献段落，且导出时
+    参考文献段落使用受保护样式，故不会被 ``apply_typesetting`` 的正文规格覆盖。
+    """
+    from docx.enum.text import WD_LINE_SPACING
+    from docx.shared import Pt
+
+    fmt = paragraph.paragraph_format
+    fmt.left_indent = Pt(hanging_indent_pt)
+    fmt.first_line_indent = Pt(-hanging_indent_pt)  # 负首行缩进 = 悬挂缩进
+    if single_spacing:
+        fmt.line_spacing_rule = WD_LINE_SPACING.SINGLE
+        fmt.line_spacing = 1.0
+
+
 def apply_typesetting(docx_path: str, spec: Typesetting) -> int:
-    """把排版规格施加到 docx 正文段落，返回受影响的段落数。
+    """把排版规格施加到 docx 正文段落（含节级分栏），返回受影响的正文段落数。
 
     幂等、防御式：``spec`` 全未指定时不改动任何段落（返回 0）；python-docx 不可用
-    时抛 ``RuntimeError``（与 DocxExporter 一致的可诊断失败）。
+    时抛 ``RuntimeError``（与 DocxExporter 一致的可诊断失败）。分栏为节级原语，单独
+    经 :func:`apply_columns` 施加，不计入正文段落数。
     """
     if spec.is_empty():
         return 0
@@ -63,6 +126,10 @@ def apply_typesetting(docx_path: str, spec: Typesetting) -> int:
         raise RuntimeError(
             "apply_typesetting 需要 python-docx，请安装：pip install '.[docx]'"
         ) from exc
+
+    # 分栏（节级原语）：先施加，独立于段落级排版。
+    if spec.columns is not None:
+        apply_columns(docx_path, spec.columns)
 
     document = docx.Document(docx_path)
     alignment_enum = _alignment_enum(spec.alignment) if spec.alignment else None
@@ -116,4 +183,9 @@ def _set_east_asian_font(run, font_name: str) -> None:
         pass
 
 
-__all__ = ["apply_typesetting"]
+__all__ = [
+    "apply_typesetting",
+    "apply_columns",
+    "format_reference_paragraph",
+    "REFERENCE_HANGING_INDENT_PT",
+]

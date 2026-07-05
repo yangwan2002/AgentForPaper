@@ -31,14 +31,21 @@ _TYPESET_SCHEMA = {
             "description": "首行缩进，如 \"2ch\"（2 字符）、\"24pt\"、\"1cm\"。",
         },
         "font": {"type": "string", "description": "正文字体名，如 宋体 / Times New Roman。"},
+        "columns": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "分栏数：2=双栏（小论文常用），1=单栏。节级排版，作用于整篇。",
+        },
     },
     "required": [],
 }
 
 _TYPESET_DESCRIPTION = (
-    "设置 Word 正文段落的排版规格（行距、对齐方式、首行缩进、字体）。这是一个"
-    "**设置**：只记录规格、不产生文件。之后调用 export_paper（format=docx）导出时，"
-    "系统会自动把这些规格套用到正文段落（标题/参考文献等结构段落不受影响）。"
+    "设置 Word 正文段落的排版规格（行距、对齐方式、首行缩进、字体、分栏数）。这是一个"
+    "**设置**：只记录规格、不产生文件。之后调用 export_paper（format=docx）导出、或用 "
+    "polish_docx_inplace 就地处理原 docx 时，系统会自动把这些规格套用（含双栏等分栏；"
+    "标题/参考文献等结构段落不受影响）。用户要「把 docx 设成双栏」等纯排版调整时用本工具"
+    "（配合 polish_docx_inplace 作用于原稿），无需跨格式转换。"
 )
 
 
@@ -55,15 +62,17 @@ def _handle_set_typesetting(
     alignment: str | None = None,
     first_line_indent: str | None = None,
     font: str | None = None,
+    columns: int | None = None,
 ) -> str:
     spec = Typesetting(
         line_spacing=line_spacing,
         alignment=alignment,
         first_line_indent=first_line_indent,
         font=font,
+        columns=columns,
     )
     if spec.is_empty():
-        return "未提供任何排版规格，未做变更。请至少指定行距/对齐/首行缩进/字体之一。"
+        return "未提供任何排版规格，未做变更。请至少指定行距/对齐/首行缩进/字体/分栏之一。"
 
     # 纯设置：只把排版规格记录到工作区（不导出、不产文件）。导出 docx 时由
     # export_paper 自动套用——这样只有一个地方写 docx，顺序无关、不会互相覆盖。
@@ -87,6 +96,8 @@ def _describe_spec(spec: Typesetting) -> str:
         bits.append(f"首行缩进={spec.first_line_indent}")
     if spec.font:
         bits.append(f"字体={spec.font}")
+    if spec.columns is not None:
+        bits.append("双栏" if spec.columns == 2 else f"{spec.columns}栏")
     return "、".join(bits)
 
 
@@ -94,8 +105,10 @@ def register_set_typesetting(registry: ToolRegistry, ctx: ToolContext) -> None:
     registry.register(
         name="set_typesetting",
         description=_TYPESET_DESCRIPTION,
-        handler=lambda line_spacing=None, alignment=None, first_line_indent=None, font=None: (
-            _handle_set_typesetting(ctx, line_spacing, alignment, first_line_indent, font)
+        handler=lambda line_spacing=None, alignment=None, first_line_indent=None, font=None, columns=None: (  # noqa: E501
+            _handle_set_typesetting(
+                ctx, line_spacing, alignment, first_line_indent, font, columns
+            )
         ),
         parameters=_TYPESET_SCHEMA,
     )

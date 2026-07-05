@@ -21,7 +21,7 @@ from hypothesis import strategies as st
 from paper_agent.tools.faithfulness_extract import extract_pairs, split_sentences
 from paper_agent.tools.quality_gate import (
     _TEXT_CITATION,
-    _is_doc_type_marker,
+    _is_non_citation_marker,
     extract_text_citations,
 )
 
@@ -165,11 +165,11 @@ def test_prop2_claim_sentence_contains_marker_and_is_full_sentence(content, veri
     produced = {(p.claim_sentence, p.cited_reference_id) for p in all_pairs}
 
     # 确定性：每个 [id] 标注的 claim_sentence 恰为覆盖其字符位置的 split_sentences 句子。
-    # GB/T 7714 文献类型标识（[J]/[C]/[A] 等）按契约不算引用、不产 pair，与 extract_pairs
-    # 一致地跳过（扫描规则复用一致性）。
+    # 非文献引用标记（GB/T 7714 著录标识 [J]/[C]/[M] 与 LaTeX 交叉引用标签 [eq:..]/[tab:..]）
+    # 按契约不算引用、不产 pair，与 extract_pairs 一致地跳过（扫描规则复用一致性）。
     for match in _TEXT_CITATION.finditer(content):
         ref_id = match.group(1)
-        if _is_doc_type_marker(ref_id):
+        if _is_non_citation_marker(ref_id):
             continue
         expected_sentence = _enclosing_sentence(sentences, match.start())
         assert (expected_sentence, ref_id) in produced

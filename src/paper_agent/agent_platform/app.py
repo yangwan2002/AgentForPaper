@@ -100,6 +100,9 @@ class PaperAgentApp:
     # 意图路由，命中固定任务走确定性工作流。默认关闭 → 全部走既有 converse（向后兼容）。
     routing_enabled: bool = False
     routing_confidence_threshold: float = 0.75
+    # 保格式润色的只读审计器（inplace-polish-audit）：非空时注入 InplacePolishWorkflow，
+    # 润色同时附文献真伪 + 引用忠实性审计报告。None → 不审计（行为不变）。
+    draft_auditor: object | None = None
 
     def __post_init__(self) -> None:
         validate_agent_config(self.agent_config)
@@ -207,7 +210,9 @@ class PaperAgentApp:
         inplace_llm = self.reviewer_llm if self.reviewer_llm is not None else self.llm
         workflows = {
             Intent.CONVERT_FORMAT: ConvertWorkflow(),
-            Intent.INPLACE_POLISH: InplacePolishWorkflow(inplace_llm),
+            Intent.INPLACE_POLISH: InplacePolishWorkflow(
+                inplace_llm, auditor=self.draft_auditor
+            ),
         }
         return router, workflows
 
@@ -358,7 +363,10 @@ def build_agent_app(
     from paper_agent.agent_platform.faithfulness_screener import (
         GuardrailFaithfulnessScreener,
     )
-    from paper_agent.agents.citation_faithfulness_agent import FaithfulnessJudge
+    from paper_agent.agents.citation_faithfulness_agent import (
+        CitationFaithfulnessAgent,
+        FaithfulnessJudge,
+    )
     from paper_agent.parsing import StructuredParser
 
     judge_llm = reviewer_llm if reviewer_llm is not None else base_llm
@@ -392,6 +400,24 @@ def build_agent_app(
     def _pipeline_runner(workspace_id: str):
         return orchestrator.run(resume_id=workspace_id)
 
+    # 保格式润色的只读审计器（inplace-polish-audit）：默认开启；mock LLM / mock 检索
+    # 下自动降级（判定器置 None / retrieval_available=False），产出「不可核验」报告。
+    draft_auditor = None
+    if bool(getattr(config, "inplace_audit_enabled", True)):
+        from paper_agent.agent_platform.audit import DraftAuditor
+
+        retrieval_available = config.retrieval_provider not in ("mock", "", None)
+        faith_agent = None
+        if config.llm_provider != "mock":
+            faith_agent = CitationFaithfulnessAgent(
+                FaithfulnessJudge(StructuredParser(judge_llm)),
+                min_grounding_chars=config.min_grounding_chars,
+                token_budget=config.faithfulness_token_budget,
+            )
+        draft_auditor = DraftAuditor(
+            verifier, faith_agent, retrieval_available=retrieval_available
+        )
+
     return PaperAgentApp(
         llm=agent_llm,
         repo=repo,
@@ -415,6 +441,8 @@ def build_agent_app(
         routing_confidence_threshold=float(
             getattr(config, "routing_confidence_threshold", 0.75)
         ),
+        # 保格式润色只读审计器（inplace-polish-audit）。
+        draft_auditor=draft_auditor,
     )
 
 

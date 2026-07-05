@@ -101,20 +101,10 @@ def _resolve_source(ctx: ToolContext, path: str | None) -> tuple[str | None, str
 
 
 def _set_two_columns(docx_path: str) -> None:
-    """把 docx 所有 section 设为双栏（操作 sectPr 的 w:cols num=2）。"""
-    import docx  # noqa: WPS433
-    from docx.oxml.ns import qn
-    from docx.oxml import OxmlElement
+    """把 docx 所有 section 设为双栏。委托给分栏排版原语（单一实现，避免重复）。"""
+    from paper_agent.export.typesetting import apply_columns
 
-    document = docx.Document(docx_path)
-    for section in document.sections:
-        sect_pr = section._sectPr
-        cols = sect_pr.find(qn("w:cols"))
-        if cols is None:
-            cols = OxmlElement("w:cols")
-            sect_pr.append(cols)
-        cols.set(qn("w:num"), "2")
-    document.save(docx_path)
+    apply_columns(docx_path, 2)
 
 
 def _fix_table_widths(docx_path: str) -> None:
