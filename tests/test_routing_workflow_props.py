@@ -108,8 +108,12 @@ def test_prop1_signal_detection_reproducible(verb, fmt):
     a = detect_signals(text, ws)
     b = detect_signals(text, ws)
     assert a == b  # 纯函数、可复现
-    intents, params, _ = a
-    assert Intent.CONVERT_FORMAT in intents  # 有目标格式 + 转换动词 → 命中转格式
+    intents, _params, _ = a
+    # 目标格式与源（.tex→latex）相同为空操作、不算转换；跨格式才命中转格式。
+    if fmt == "latex":
+        assert Intent.CONVERT_FORMAT not in intents
+    else:
+        assert Intent.CONVERT_FORMAT in intents
 
 
 # --------------------------------------------------------------------------- #

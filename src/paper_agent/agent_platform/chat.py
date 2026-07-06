@@ -66,6 +66,9 @@ class ChatTurn:
     made_progress: bool = False
     # 收尾验收提示（本轮产生导出产物时对成品跑确定性验收的结论），供 REPL 展示。
     acceptance_note: str = ""
+    # 本轮回复是否已由 LLM **实时流式**打印（仅 converse 路径为真）。工作流/取消路径的
+    # 回复不经流式产生，REPL 在流式模式下须显式打印，否则结果会被"吞掉"（看似任务终止）。
+    streamed: bool = False
 
 
 class ChatController:
@@ -86,12 +89,24 @@ class ChatController:
         tool_context: ToolContext | None = None,
         routing_enabled: bool = False,
         confirm_threshold: float = 0.75,
+        visual_gate=None,
+        visual_enabled: bool = False,
+        visual_max_rounds: int = 1,
+        visual_dpi: int = 150,
+        visual_max_pages: int = 6,
     ) -> None:
         self._agent = agent
         self._session = session
         self._repo = repo
         self._ask_tool = ask_tool
         self._messages: list[Message] = agent.new_conversation()
+        # 视觉版面验收闸（visual-layout-acceptance）：默认关；开启且注入 gate 时，收尾在
+        # 本轮含版面操作 / agent 主动调 check_layout 时渲染产物看图判断、有界重改、诚实上报。
+        self._visual_gate = visual_gate
+        self._visual_enabled = bool(visual_enabled and visual_gate is not None)
+        self._visual_max_rounds = visual_max_rounds
+        self._visual_dpi = visual_dpi
+        self._visual_max_pages = visual_max_pages
         # 收尾验收：本轮产生导出产物时，对成品跑一次确定性验收 + 有界自愈（P0）。
         self._output_dir = output_dir
         self._enable_acceptance = enable_acceptance
@@ -138,6 +153,7 @@ class ChatController:
         # 收尾验收（P0）：仅当本轮产生了导出产物时，对成品跑一次确定性验收 + 有界
         # 自愈，把乱码/排版未应用/悬空引用/数量年限等未达标项如实附加到回复。
         acceptance_note = self._maybe_run_acceptance(user_text, new_entries)
+        acceptance_note = self._append_visual_note(acceptance_note, user_text, new_entries)
 
         self._persist()
         return ChatTurn(
@@ -146,6 +162,7 @@ class ChatController:
             tool_calls=tool_calls,
             made_progress=made_progress,
             acceptance_note=acceptance_note,
+            streamed=True,  # converse 路径的回复已由 LLM 实时流式打印
         )
 
     def _try_route(self, user_text: str) -> ChatTurn | None:
@@ -180,18 +197,136 @@ class ChatController:
     def _run_workflow(
         self, workflow: Workflow, outcome: ConfirmOutcome, user_text: str
     ) -> ChatTurn:
-        """执行确定性工作流并渲染为 ChatTurn（含产物的收尾验收）。"""
+        """执行确定性工作流并渲染为 ChatTurn（含产物的收尾验收）。
+
+        **确定性核心 + 柔性长尾兜底**：工作流只保证它写死的那部分（如格式转换 + 双栏 +
+        三线表）；核心覆盖不了的排版细项（字体/字号、图跨栏）作为 ``followups`` 转交自由
+        智能体（open→run_python / python-docx）在产物上完成——绝不静默丢弃、绝不谎报完成。
+        """
         before = len(self._session.transcript)
         result = workflow.run(self._tool_context, outcome.params)
+        reply = result.message()
+        tool_calls = [outcome.intent.value]
+
+        # 兜底转交：确定性转换成功且有产物、且存在核心未覆盖的排版细项 → 交柔性通道完成。
+        if result.ok and result.files and result.followups:
+            spill_reply, spill_tools = self._spill_to_agent(
+                produced=result.files[0],
+                followups=result.followups,
+                source_text=str(outcome.params.get("followup_source_text") or user_text),
+            )
+            if spill_reply:
+                reply = (reply + "\n\n" + spill_reply).strip()
+            tool_calls += spill_tools
+
         new_entries = self._session.transcript[before:]
+        made_progress = result.ok or any(e.get("passed") is True for e in new_entries)
         acceptance_note = self._maybe_run_acceptance(user_text, new_entries)
+        acceptance_note = self._append_visual_note(acceptance_note, user_text, new_entries)
         self._persist()
         return ChatTurn(
-            reply=result.message(),
-            tool_calls=[outcome.intent.value],
-            made_progress=result.ok,
+            reply=reply,
+            tool_calls=tool_calls,
+            made_progress=made_progress,
             acceptance_note=acceptance_note,
         )
+
+    def _spill_to_agent(
+        self, produced: str, followups: list[str], source_text: str
+    ) -> tuple[str, list[str]]:
+        """把转换核心未覆盖的排版细项转交自由智能体，在产物上完成（best-effort）。
+
+        复用既有 ``converse`` 路径（同一 messages 延续），指令明确"只改排版、不动正文/
+        公式/结构，走副本 + 结构无损校验"。返回 (智能体回复, 本次工具名列表)。
+        任何异常都吞掉并如实降级——转交失败不该拖垮已成功的转换产物。
+        """
+        pending = "\n".join(f"- {item}" for item in followups)
+        instruction = (
+            "（系统转交）确定性转换已完成：源文件已转为 docx，并按需设置了整篇双栏 / 三线表 / "
+            f"表格列宽。产物路径：{produced}\n"
+            "以下用户排版诉求转换核心未覆盖，请**在该产物文件上**用 run_python + python-docx "
+            "完成（务必走副本并做结构无损校验；只改排版，不改正文/公式/结构；完成后覆盖回该文件"
+            "或另存并告知最终路径）：\n"
+            f"{pending}\n"
+            f"用户原话：{source_text}\n"
+            "已完成的转换/双栏/三线表不要重复做。若某项确实做不到，请如实说明，不要假装完成。"
+        )
+        try:
+            before = len(self._session.transcript)
+            reply, _bound = self._agent.converse(
+                self._session, self._messages, instruction
+            )
+            new_entries = self._session.transcript[before:]
+            tools = [
+                e.get("name", "") for e in new_entries if e.get("kind") == "tool_call"
+            ]
+            return reply or "", tools
+        except Exception:  # noqa: BLE001 - 转交失败不影响已成功的转换产物
+            return (
+                "（上述排版细项自动转交处理时出错，你可以再说一句让我用 run_python 单独处理。）",
+                [],
+            )
+
+    def _append_visual_note(self, note: str, user_text: str, new_entries: list[dict]) -> str:
+        """把视觉验收结论（若触发）拼到收尾提示后（诚实上报，未触发则不改）。"""
+        visual = self._maybe_visual_accept(user_text, new_entries)
+        return "\n".join(x for x in (note, visual) if x)
+
+    def _maybe_visual_accept(self, user_text: str, new_entries: list[dict]) -> str:
+        """本轮若含版面操作 / agent 主动调 check_layout，则对 docx 产物跑视觉验收闸。
+
+        默认关（未启用 / 未注入 gate → 空串）。渲染看图判断版面是否符合用户诉求，
+        不满足则经 ``heal_fn`` 让编辑智能体在同一对话上有界重改（走既有写路径）。
+        任何异常都吞并降级为空串——绝不拖垮主对话。
+        """
+        if not self._visual_enabled or self._visual_gate is None:
+            return ""
+        produced = ""
+        for e in new_entries:
+            for f in (e.get("files") or []):
+                if str(f).lower().endswith(".docx"):
+                    produced = str(f)
+        if not produced:
+            return ""
+
+        from paper_agent.agent_platform.visual.triggers import touched_layout
+
+        agent_requested = any(e.get("name") == "check_layout" for e in new_entries)
+        if not (touched_layout(new_entries) or agent_requested):
+            return ""
+
+        profile = getattr(self._session.workspace, "profile", None) or {}
+        src = str(profile.get("source_document_path", "") or "")
+        baseline = src if (src.lower().endswith(".docx") and src != produced) else None
+
+        def heal_fn(defects: list[str]) -> None:
+            pending = "\n".join(f"- {d}" for d in defects)
+            prompt = (
+                "（系统视觉校验）渲染产物后发现以下版面问题，请在该 docx 产物上用 "
+                f"run_python + python-docx 修正（走副本 + 结构无损校验，只改排版、不动正文/"
+                f"公式/结构）：\n产物：{produced}\n{pending}"
+            )
+            try:
+                self._agent.converse(self._session, self._messages, prompt)
+            except Exception:  # noqa: BLE001 - 重改失败不拖垮主流程
+                pass
+
+        try:
+            outcome = self._visual_gate.evaluate(
+                produced, user_text, baseline_docx=baseline, heal_fn=heal_fn,
+                max_rounds=self._visual_max_rounds, dpi=self._visual_dpi,
+                max_pages=self._visual_max_pages,
+            )
+        except Exception:  # noqa: BLE001 - 闸门异常 → 静默降级
+            return ""
+        try:
+            self._session.record(
+                "visual_acceptance", ran=outcome.ran, satisfied=outcome.satisfied,
+                defects=list(outcome.defects), rounds=outcome.rounds, backend=outcome.backend,
+            )
+        except Exception:  # noqa: BLE001
+            pass
+        return outcome.message()
 
     def _maybe_run_acceptance(self, user_text: str, new_entries: list[dict]) -> str:
         """本轮若产出导出文件则跑收尾验收，返回给用户的提示（否则空串）。"""
@@ -311,6 +446,10 @@ def _one_turn(controller: ChatController, text: str, output_fn, streaming: bool)
     if streaming:
         output_fn("\n助手 > ")
         turn = controller.send(text)
+        # 工作流/取消等**非流式**路径的回复不会被实时打印，须在此显式输出，否则
+        # 结果会被吞掉（用户会以为"选了就终止了"）。converse 路径已流式打印，不重复。
+        if turn.reply and not turn.streamed:
+            output_fn(turn.reply)
         output_fn("")  # 收尾换行
         if not turn.reply and not turn.tool_calls:
             output_fn("（无文本答复）")

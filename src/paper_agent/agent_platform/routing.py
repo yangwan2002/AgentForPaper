@@ -19,6 +19,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 from dataclasses import dataclass, field
 from enum import Enum
@@ -57,6 +58,21 @@ class RouteDecision:
 # 确定性信号（加速 / 校验；不追求覆盖所有说法）
 # --------------------------------------------------------------------------- #
 
+# 文件扩展名 → 规范格式名（用于判断源/目标是否同格式）。
+_EXT_FORMAT = {
+    ".docx": "docx",
+    ".tex": "latex",
+    ".latex": "latex",
+    ".md": "markdown",
+    ".markdown": "markdown",
+}
+
+
+def _same_format(fmt: str, src_ext: str) -> bool:
+    """目标格式与源文件扩展名是否指向同一格式（如 .docx 与 "docx"）。"""
+    return bool(src_ext) and _EXT_FORMAT.get((src_ext or "").lower()) == fmt
+
+
 # 目标格式关键词 → 规范格式名。
 def _detect_target_format(text: str) -> str:
     if "docx" in text or "word" in text:
@@ -68,11 +84,58 @@ def _detect_target_format(text: str) -> str:
     return ""
 
 
+# 从用户消息里提取文件路径（带引号优先——能处理含空格的路径；否则裸路径）。
+# 以已知文档扩展名结尾，避免误抓普通词。
+_QUOTED_PATH = re.compile(
+    r'["\'\u201c\u201d]([^"\'\u201c\u201d\n]+?\.(?:tex|latex|docx|md|markdown))["\'\u201c\u201d]',
+    re.IGNORECASE,
+)
+_BARE_PATH = re.compile(
+    r'((?:[A-Za-z]:\\|/|\.{0,2}/)[^\s"\'\u201c\u201d]*?\.(?:tex|latex|docx|md|markdown))',
+    re.IGNORECASE,
+)
+
+
+def _extract_source_path(request_text: str) -> str:
+    """从**原始**请求文本里提取源文件路径（引号内优先，其次裸路径）；无则空串。"""
+    text = request_text or ""
+    m = _QUOTED_PATH.search(text)
+    if m:
+        return m.group(1).strip()
+    m = _BARE_PATH.search(text)
+    if m:
+        return m.group(1).strip()
+    return ""
+
+
 _CONVERT_VERBS = ("转成", "转为", "转换", "转化", "导出为", "导出成", "变成", "生成", "转")
 _TWO_COLUMN_KW = ("双栏", "两栏", "分栏", "two column", "two-column", "double column")
 _POLISH_KW = ("润色", "语言", "表达", "通顺", "流畅", "措辞", "文笔")
 _KEEP_FORMAT_KW = ("保留格式", "保结构", "保留原格式", "保留原有格式", "别改格式",
                    "不改格式", "不动格式", "原样", "保持格式", "保留排版")
+
+# 转换确定性核心**无法覆盖**、需转交柔性通道（open→run_python / python-docx）的排版细项。
+# 字体/字号关键词。
+_FONT_KW = (
+    "字体", "字号", "五号", "小四", "四号", "小五", "小三", "三号", "二号", "小二",
+    "宋体", "楷体", "黑体", "仿宋", "雅黑", "times", "font", "磅", "pt",
+)
+# 图跨栏放置：如"图要双栏放置""把图搞成双栏""图横跨两栏"。
+_FIGURE_SPAN_RE = re.compile(r"图.{0,6}(?:双栏|两栏|跨栏|横跨|通栏)")
+
+
+def _detect_followups(text: str) -> list[str]:
+    """从消息里识别转换核心覆盖不了、须转交柔性通道处理的排版细项（人可读）。
+
+    这些不是转换核心的旋钮（核心只保证：格式转换 + 整篇双栏 + 三线表 + 表格列宽），
+    识别出来是为了**诚实回报 + 兜底转交**，而非在核心里现做。
+    """
+    items: list[str] = []
+    if _FIGURE_SPAN_RE.search(text):
+        items.append("让图跨双栏放置（不要挤在单栏）")
+    if any(k in text for k in _FONT_KW):
+        items.append("设置正文字体/字号")
+    return items
 
 
 def detect_signals(request_text: str, ws) -> tuple[set[Intent], dict, list[str]]:
@@ -92,8 +155,26 @@ def detect_signals(request_text: str, ws) -> tuple[set[Intent], dict, list[str]]
         params["source_path"] = src_path
         labels.append(f"source_ext={src_ext}")
 
+    # 消息里显式给出的路径优先（用户直接贴了原文件路径，未必 import 过）。
+    msg_path = _extract_source_path(request_text or "")
+    if msg_path:
+        params["source_path"] = msg_path
+        ext = os.path.splitext(msg_path)[1].lower()
+        if ext:
+            src_ext = ext
+        labels.append("msg_source_path")
+
     # 转格式信号：有明确目标格式 + (转换动词 或 已有源文件)。
-    fmt = _detect_target_format(text)
+    # 关键：目标格式检测**排除已提取的源文件路径**——否则源文件名里的 ".docx"/".tex"
+    # 会被误当成"要转成该格式"（用户贴的是源文件、不是要转成它的格式）。
+    text_for_fmt = text
+    if msg_path:
+        text_for_fmt = text_for_fmt.replace(msg_path.lower(), " ")
+    fmt = _detect_target_format(text_for_fmt)
+    # 源与目标同格式（如 docx→docx）不是真转换 → 不作为转格式信号（多为文档内编辑请求）。
+    if fmt and _same_format(fmt, src_ext):
+        fmt = ""
+        labels.append("same_format_noop")
     if fmt:
         params["to_format"] = fmt
         labels.append(f"target_format={fmt}")
@@ -111,6 +192,14 @@ def detect_signals(request_text: str, ws) -> tuple[set[Intent], dict, list[str]]
     if any(k in text for k in _POLISH_KW) and any(k in text for k in _KEEP_FORMAT_KW):
         intents.add(Intent.INPLACE_POLISH)
         labels.append("inplace_polish_signal")
+
+    # 核心覆盖不了的排版细项（字体/字号、图跨栏）→ 记为 followups，供工作流诚实上报 +
+    # 上层兜底转交（不在确定性核心里现做）。同时留下原始请求文本供转交时给智能体上下文。
+    followups = _detect_followups(text)
+    if followups:
+        params["followups"] = followups
+        params["followup_source_text"] = request_text or ""
+        labels.append("followups")
 
     return intents, params, labels
 
@@ -132,10 +221,14 @@ def _is_strong_convert(intents: set[Intent], params: dict, labels: list[str]) ->
 _CLASSIFY_SYSTEM = (
     "你是一个意图分类器。判断用户这条请求属于以下哪一类，**只输出一个 JSON 对象**，"
     "不要输出别的：\n"
-    "- convert_format：把文档从一种格式转成另一种（如 LaTeX→Word/docx、docx→LaTeX，"
-    "或调整为双栏等排版格式）\n"
+    "- convert_format：把文档从**一种文件格式转成另一种文件格式**（如 LaTeX→Word/docx、"
+    "docx→LaTeX、md→docx）。**仅指跨文件格式的整体转换**。\n"
     "- inplace_polish：在**保留原文件格式/结构**的前提下润色语言表达\n"
-    "- open：其它所有情况（从零写作、补写章节、加文献/引用、改内容、评审、问答等）\n"
+    "- open：其它所有情况。**特别注意**：在**同一个文档内部**修改排版/字体/行距/缩进、"
+    "把某张图改成双栏图或单栏图、调整某个图表、改某段的格式属性、加文献/引用、改内容、"
+    "补写章节、从零写作、评审、问答等，**全部属于 open**（这些不是文件格式转换）。\n"
+    "判定要点：只有当用户要把文档**从一种格式另存/转换为另一种格式**时才是 convert_format；"
+    "若源文件和目标是**同一种格式**（如给了 docx 又要在 docx 里改东西），那不是转换，是 open。\n"
     "输出格式：{\"intent\": \"convert_format|inplace_polish|open\", "
     "\"confidence\": 0到1的小数, \"rephrase\": \"用一句话复述你判断的用户意图\"}"
 )

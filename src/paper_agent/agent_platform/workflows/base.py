@@ -35,13 +35,19 @@ class WorkflowResult:
     files: list[str] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
     unresolved: list[str] = field(default_factory=list)
+    # 确定性核心**未覆盖**的诉求（如字体/字号、图跨栏）——诚实列出，由上层兜底转交
+    # 柔性通道处理，绝不静默丢弃、绝不谎报"全部完成"。
+    followups: list[str] = field(default_factory=list)
 
     def message(self) -> str:
-        """人可读结论：成功给 notes 拼接，失败额外附 unresolved。"""
+        """人可读结论：成功给 notes 拼接，失败附 unresolved，另诚实标注待转交的 followups。"""
         body = "".join(self.notes)
         if not self.ok and self.unresolved:
             reasons = "；".join(self.unresolved)
             return (body + f"\n未完成：{reasons}").strip()
+        if self.ok and self.followups:
+            pending = "；".join(self.followups)
+            body = (body + f"\n以下排版细项转换核心未覆盖，正在转交处理：{pending}").strip()
         return body
 
 

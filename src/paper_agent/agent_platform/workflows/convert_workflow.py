@@ -43,7 +43,13 @@ class ConvertWorkflow:
             return WorkflowResult(
                 ok=False, unresolved=[outcome.error or "转换失败"]
             )
-        return WorkflowResult(ok=True, files=list(outcome.files), notes=list(outcome.notes))
+        # 核心覆盖不了的排版细项（字体/字号、图跨栏）如实带出，交上层兜底转交——只在
+        # 确有产物时才有意义（同格式空转无产物则无所谓 followups）。
+        followups = list(params.get("followups") or []) if outcome.files else []
+        return WorkflowResult(
+            ok=True, files=list(outcome.files), notes=list(outcome.notes),
+            followups=followups,
+        )
 
 
 __all__ = ["ConvertWorkflow"]
