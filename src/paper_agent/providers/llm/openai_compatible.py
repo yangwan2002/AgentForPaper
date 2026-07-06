@@ -15,8 +15,11 @@ import json
 import os
 from typing import Iterator
 
+import base64
+
 from paper_agent.providers.llm.base import (
     CancellationToken,
+    ImageInput,
     LLMError,
     LLMProvider,
     LLMResponse,
@@ -24,6 +27,23 @@ from paper_agent.providers.llm.base import (
     StreamChunk,
     ToolCall,
 )
+
+
+def _image_data_url(img: ImageInput) -> str | None:
+    """把 ImageInput 解析为可放进 OpenAI content part 的图片 URL；失败返回 None。
+
+    ``data_url`` 已就绪则直用；否则读本地 ``path`` 编码为 ``data:<media>;base64,<..>``。
+    """
+    if img.data_url:
+        return img.data_url
+    if img.path:
+        try:
+            with open(img.path, "rb") as fh:
+                b64 = base64.b64encode(fh.read()).decode("ascii")
+            return f"data:{img.media_type};base64,{b64}"
+        except OSError:
+            return None
+    return None
 
 
 def _openai():
@@ -48,8 +68,22 @@ def _usage_of(resp) -> tuple[int | None, int | None]:
 
 
 def _to_api_message(m: Message) -> dict:
-    """把内部 Message 转成 OpenAI API 消息格式（含工具调用字段）。"""
-    msg: dict = {"role": m.role, "content": m.content}
+    """把内部 Message 转成 OpenAI API 消息格式（含工具调用字段）。
+
+    ``m.images`` 为空/None 时 content 仍为**纯字符串**，序列化与现状逐字节一致；
+    非空时 content 转为 OpenAI 风格多模态 parts（text + image_url）。
+    """
+    if m.images:
+        parts: list[dict] = []
+        if m.content:
+            parts.append({"type": "text", "text": m.content})
+        for img in m.images:
+            url = _image_data_url(img)
+            if url:
+                parts.append({"type": "image_url", "image_url": {"url": url}})
+        msg: dict = {"role": m.role, "content": parts}
+    else:
+        msg = {"role": m.role, "content": m.content}
     if m.tool_calls:
         msg["tool_calls"] = [
             {

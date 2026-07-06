@@ -100,6 +100,39 @@ def build_reviewer_llm_provider(config: Config) -> LLMProvider | None:
     return build_llm_provider(reviewer_cfg)
 
 
+def build_vlm_provider(config: Config) -> LLMProvider | None:
+    """据配置构造**多模态（vision）** LLM provider（visual-layout-acceptance）。
+
+    与主文本 LLM 解耦：由 ``vlm_*`` 字段独立配置。``vlm_provider`` 为空 → 返回
+    ``None``（未配置，视觉验收闸优雅降级跳过）。"mock" → MockLLMProvider（测试用）。
+    其余走通用 OpenAI 兼容 provider（vision 能力由所选模型决定）。
+    """
+    name = (config.vlm_provider or "").lower()
+    if not name:
+        return None
+    if name == "mock":
+        return MockLLMProvider()
+    load_dotenv()
+    from paper_agent.providers.llm.openai_compatible import OpenAICompatibleProvider
+
+    if name in VENDOR_PRESETS:
+        preset = VENDOR_PRESETS[name]
+        return OpenAICompatibleProvider(
+            model=config.vlm_model or preset.default_model,
+            api_key_env=config.vlm_api_key_env or preset.api_key_env,
+            base_url=config.vlm_base_url or (preset.base_url or None),
+            extra_body=preset.extra_body,
+            default_options=preset.default_options,
+        )
+    if not config.vlm_model:
+        raise LLMError("配置多模态 provider 时必须指定 vlm_model。")
+    return OpenAICompatibleProvider(
+        model=config.vlm_model,
+        api_key_env=config.vlm_api_key_env or "PAPER_VLM_API_KEY",
+        base_url=config.vlm_base_url or None,
+    )
+
+
 def build_retrieval_provider(config: Config) -> RetrievalProvider:
     name = config.retrieval_provider.lower()
     if name == "mock":

@@ -27,6 +27,20 @@ class ToolCall:
 
 
 @dataclass
+class ImageInput:
+    """一张随消息携带的图像输入（多模态 / vision）。
+
+    ``path`` 指向本地图片文件（优先，序列化时编码为 data: base64）；亦可直接给
+    ``data_url``（已是 ``data:image/...;base64,...`` 或 http(s) URL）。仅多模态调用
+    使用；纯文本消息不带图像，行为与现状一致。
+    """
+
+    path: str | None = None
+    data_url: str | None = None
+    media_type: str = "image/png"
+
+
+@dataclass
 class Message:
     role: str   # "system" | "user" | "assistant" | "tool"
     content: str
@@ -34,6 +48,8 @@ class Message:
     tool_calls: list[ToolCall] | None = None
     # 仅 role="tool" 的消息携带，对应被回答的 ToolCall.id。
     tool_call_id: str | None = None
+    # 仅多模态调用携带；None（默认）表示纯文本消息——序列化路径与现状逐字节一致。
+    images: list["ImageInput"] | None = None
 
 
 @dataclass

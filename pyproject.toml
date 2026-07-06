@@ -49,3 +49,6 @@ where = ["src"]
 pythonpath = ["src"]
 testpaths = ["tests"]
 addopts = "-q"
+markers = [
+    "roundtrip: 真机 roundtrip 冒烟测试（需真实 pandoc/Word/LibreOffice + PyMuPDF；无则自动 skip）",
+]
