@@ -179,6 +179,7 @@ class PandocConverter:
         from_format: str,
         to_format: str,
         extra_args: list[str] | None = None,
+        resource_dir: str | None = None,
         timeout: float = 180.0,
     ) -> ConversionResult:
         """文件到文件的**跨格式直转**（如 LaTeX 源 → docx，保留公式/结构）。
@@ -188,8 +189,9 @@ class PandocConverter:
         跨格式转换——公式、章节结构由 pandoc 正确映射，而非当纯文本重建。
 
         用参数列表调用、绝不经 shell（防注入）；非零退出/异常 → ``ok=False`` 且
-        stderr 截断。``--resource-path`` 设为源文件目录，使 ``\\input`` / 图片相对
-        路径可解析。
+        stderr 截断。``--resource-path`` 默认取 ``in_path`` 所在目录，使 ``\\input`` /
+        图片相对路径可解析；当输入是**预规整后的临时副本**（与原文件不同目录）时，可用
+        ``resource_dir`` 显式指向原文件目录，保证相对资源仍能被找到。
         """
         import os
 
@@ -199,8 +201,8 @@ class PandocConverter:
             "-t", to_format,
             "-o", out_path,
         ]
-        resource_dir = os.path.dirname(os.path.abspath(in_path)) or "."
-        args += ["--resource-path", resource_dir]
+        res_dir = resource_dir or os.path.dirname(os.path.abspath(in_path)) or "."
+        args += ["--resource-path", res_dir]
         if extra_args:
             args += list(extra_args)
         args.append(in_path)

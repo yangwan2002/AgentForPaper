@@ -18,6 +18,7 @@ from dataclasses import dataclass, field
 
 from paper_agent.agent_platform.models import Typesetting
 from paper_agent.agent_platform.tools.context import ToolContext
+from paper_agent.export.latex_normalize import normalize_latex_for_pandoc
 from paper_agent.export.pandoc_pipeline import PandocConverter
 from paper_agent.tools.registry import ToolRegistry
 
@@ -115,12 +116,18 @@ def _fix_table_widths(docx_path: str) -> None:
     宽度设 ``auto`` + ``tblLayout=autofit``）后，Word 按内容重算列宽。
     """
     import docx  # noqa: WPS433
+    from docx.enum.table import WD_TABLE_ALIGNMENT
     from docx.oxml import OxmlElement
     from docx.oxml.ns import qn
 
     document = docx.Document(docx_path)
     for table in document.tables:
         table.allow_autofit = True
+        # 表格整体居中（学术论文惯例；pandoc 默认靠左，此处纠正）。
+        try:
+            table.alignment = WD_TABLE_ALIGNMENT.CENTER
+        except Exception:  # noqa: BLE001 - 对齐设置失败不影响宽度修复
+            pass
         tbl = table._tbl
         tbl_pr = tbl.tblPr
         # tblLayout = autofit（否则 Word 用固定布局，严格按 gridCol 比例压缩）。
@@ -189,6 +196,116 @@ def _apply_three_line_table_style(docx_path: str) -> None:
     document.save(docx_path)
 
 
+# 宽表适配参数（把 LaTeX 里 \footnotesize + \tabcolsep=3pt + \extracolsep{\fill} 那套
+# "挤得下"的手段补回 docx——pandoc 转换会把它们全丢掉，导致 Word 逐字符折行）。
+_TABLE_FONT_PT = 9.0            # 表格字体缩到小五号（≈ LaTeX \footnotesize，正文小 1 号）
+_TABLE_CELL_MARGIN_TWIPS = 40   # 单元格左右内边距（≈2pt；Word 默认 108twips 太宽，8 列吃不消）
+_WIDE_TABLE_MIN_COLS = 6        # 列数 ≥ 此阈值判为"宽表"，双栏文档里让其跨栏铺满页宽
+
+
+def _compact_tables(docx_path: str) -> int:
+    """把所有表格紧凑化：小号字体 + 压缩单元格边距 + 占满可用宽度。
+
+    对应补回 pandoc 丢失的 ``\\footnotesize`` / ``\\tabcolsep`` / ``\\extracolsep{\\fill}``：
+    Word 默认用正文字号 + 宽边距 + 无列宽指引渲染多列表，导致每格逐字符折行。返回表格数。
+    """
+    import docx  # noqa: WPS433
+    from docx.oxml import OxmlElement
+    from docx.oxml.ns import qn
+    from docx.shared import Pt
+
+    document = docx.Document(docx_path)
+    count = 0
+    for table in document.tables:
+        for row in table.rows:
+            for cell in row.cells:
+                for para in cell.paragraphs:
+                    for run in para.runs:
+                        run.font.size = Pt(_TABLE_FONT_PT)
+        _set_table_cell_margins(table, _TABLE_CELL_MARGIN_TWIPS)
+        # 表格首选宽度 = 占满容器（pct 100%）；配合 autofit 由 Word 按内容分配列宽。
+        tbl_pr = table._tbl.tblPr
+        tbl_w = tbl_pr.find(qn("w:tblW"))
+        if tbl_w is None:
+            tbl_w = OxmlElement("w:tblW")
+            tbl_pr.append(tbl_w)
+        tbl_w.set(qn("w:w"), "5000")
+        tbl_w.set(qn("w:type"), "pct")
+        count += 1
+    document.save(docx_path)
+    return count
+
+
+def _set_table_cell_margins(table, twips: int) -> None:
+    """设置整表默认单元格内边距（左右收紧、上下归零），模拟 LaTeX 小 ``\\tabcolsep``。"""
+    from docx.oxml import OxmlElement
+    from docx.oxml.ns import qn
+
+    tbl_pr = table._tbl.tblPr
+    mar = tbl_pr.find(qn("w:tblCellMar"))
+    if mar is None:
+        mar = OxmlElement("w:tblCellMar")
+        tbl_pr.append(mar)
+    for side, val in (("top", "0"), ("bottom", "0"),
+                      ("left", str(twips)), ("right", str(twips))):
+        el = mar.find(qn(f"w:{side}"))
+        if el is None:
+            el = OxmlElement(f"w:{side}")
+            mar.append(el)
+        el.set(qn("w:w"), val)
+        el.set(qn("w:type"), "dxa")
+
+
+def _span_wide_tables(docx_path: str, *, min_cols: int = _WIDE_TABLE_MIN_COLS) -> int:
+    """双栏文档里，把列数 ≥ ``min_cols`` 的宽表用连续分节符裹成**单栏岛**，独占整页宽。
+
+    等价于 LaTeX 里 ``table*`` 的"跨栏浮动"：在宽表前后各插一个带 ``sectPr`` 的空段——
+    表前 sectPr(cols=2) 结束前面的双栏区，表后 sectPr(cols=1) 使"含该表的这一节"变单栏，
+    全部 ``continuous`` 不产生分页。必须在所有分栏设置之后运行（否则被 apply_columns 覆盖）。
+    返回被跨栏处理的宽表数。
+    """
+    import copy
+
+    import docx  # noqa: WPS433
+    from docx.oxml import OxmlElement
+    from docx.oxml.ns import qn
+
+    def _sectpr_para(num_cols: int, template):
+        p = OxmlElement("w:p")
+        p_pr = OxmlElement("w:pPr")
+        p.append(p_pr)
+        sect_pr = OxmlElement("w:sectPr")
+        p_pr.append(sect_pr)
+        sec_type = OxmlElement("w:type")
+        sec_type.set(qn("w:val"), "continuous")
+        sect_pr.append(sec_type)
+        if template is not None:  # 沿用页面尺寸/页边距，避免新节回落到默认纸张
+            for tag in ("w:pgSz", "w:pgMar"):
+                src = template.find(qn(tag))
+                if src is not None:
+                    sect_pr.append(copy.deepcopy(src))
+        cols = OxmlElement("w:cols")
+        cols.set(qn("w:num"), str(num_cols))
+        sect_pr.append(cols)
+        return p
+
+    document = docx.Document(docx_path)
+    body = document.element.body
+    body_sectpr = body.find(qn("w:sectPr"))
+    spanned = 0
+    for table in document.tables:
+        tbl = table._tbl
+        grid = tbl.find(qn("w:tblGrid"))
+        ncols = len(grid.findall(qn("w:gridCol"))) if grid is not None else 0
+        if ncols < min_cols:
+            continue
+        tbl.addprevious(_sectpr_para(2, body_sectpr))  # 关掉表前的双栏区
+        tbl.addnext(_sectpr_para(1, body_sectpr))       # 含表的这一节 = 单栏铺满
+        spanned += 1
+    document.save(docx_path)
+    return spanned
+
+
 def _apply_typesetting_if_any(ctx: ToolContext, docx_path: str) -> str:
     """docx 目标：套用已保存的排版规格（set_typesetting 落定的），返回说明后缀。"""
     profile = getattr(ctx.workspace, "profile", None) or {}
@@ -205,6 +322,24 @@ def _apply_typesetting_if_any(ctx: ToolContext, docx_path: str) -> str:
         return " 已套用排版规格。"
     except Exception as exc:  # noqa: BLE001 - 排版失败不影响转换产物
         return f"（排版应用失败：{exc}）"
+
+
+def _is_locked_error(stderr: str) -> bool:
+    """pandoc stderr 是否为"输出文件被占用/权限拒绝"（多为目标 docx 在 Word 中打开）。"""
+    return "permission denied" in (stderr or "").lower()
+
+
+def _unique_out_path(output_dir: str, stem: str, ext: str) -> str:
+    """在 output_dir 里生成一个不与现有文件冲突的新产物路径（加时间戳后缀）。"""
+    import time
+
+    token = time.strftime("%H%M%S")
+    candidate = os.path.join(output_dir, f"{stem}_converted_{token}{ext}")
+    i = 1
+    while os.path.exists(candidate):
+        candidate = os.path.join(output_dir, f"{stem}_converted_{token}_{i}{ext}")
+        i += 1
+    return candidate
 
 
 def convert_document_core(
@@ -257,16 +392,49 @@ def convert_document_core(
     os.makedirs(ctx.output_dir, exist_ok=True)
     out_path = os.path.join(ctx.output_dir, f"{stem}_converted{out_ext}")
 
-    result = pandoc.convert_file(
-        src, out_path, from_format=from_format, to_format=out_format
+    # LaTeX 源转换前的确定性预规整（如折平 \shortstack/\makecell 单元格内换行，防表格
+    # 被 pandoc 误当纯文本吐出）。在**副本**上做，原文件只读；资源路径仍指向原目录。
+    notes: list[str] = []
+    in_path, cleanup_path, resource_dir, prep_notes = _prepare_latex_input(
+        src, from_format, ctx.output_dir, stem
     )
+    notes.extend(prep_notes)
+
+    result = pandoc.convert_file(
+        in_path, out_path, from_format=from_format, to_format=out_format,
+        resource_dir=resource_dir,
+    )
+    # 输出文件被占用（多为上次转出的 docx 仍在 Word/WPS 中打开、被 Windows 锁定）→
+    # 换个不冲突的新文件名重试，并如实告知，不让用户对着 "permission denied" 猜。
+    if not result.ok and _is_locked_error(result.stderr):
+        alt_path = _unique_out_path(ctx.output_dir, stem, out_ext)
+        result = pandoc.convert_file(
+            in_path, alt_path, from_format=from_format, to_format=out_format,
+            resource_dir=resource_dir,
+        )
+        if result.ok:
+            out_path = alt_path
+            notes.append(
+                f"（原输出文件可能正被 Word/WPS 打开而锁定，已改存为 "
+                f"{os.path.basename(alt_path)}。）"
+            )
+    _cleanup_temp(cleanup_path)  # 预规整临时副本用完即删（原文件从不受影响）。
     if not result.ok:
+        hint = ""
+        if _is_locked_error(result.stderr):
+            hint = (
+                "：输出文件被占用——请关闭正在打开该 docx 的 Word/WPS 后重试，"
+                "或改用其它输出目录。"
+            )
         return ConvertOutcome(
             ok=False,
-            error=f"pandoc 转换失败（exit={result.exit_code}）：{result.stderr[:300]}",
+            error=(
+                f"pandoc 转换失败（exit={result.exit_code}）{hint}"
+                f"{('：' + result.stderr[:300]) if not hint else ''}"
+            ),
         )
 
-    notes = [f"已直转为 {to_format}：{out_path}（公式与结构由 pandoc 保留）。"]
+    notes.insert(0, f"已直转为 {to_format}：{out_path}（公式与结构由 pandoc 保留）。")
     if to_format == "docx":
         # 先修表格列宽（清固定宽度为自适应），避免双栏窄栏里逐字符压缩。
         try:
@@ -280,6 +448,13 @@ def convert_document_core(
                 notes.append(" 表格已套用三线表样式。")
             except Exception as exc:  # noqa: BLE001 - 样式失败不影响主产物
                 notes.append(f"（三线表样式应用失败：{exc}）")
+        # 宽表适配：小号字体 + 紧凑边距 + 占满宽度（补回 pandoc 丢失的 LaTeX 表格排版），
+        # 消除多列表在窄栏里逐字符折行的"难看"问题。
+        try:
+            _compact_tables(out_path)
+            notes.append(" 表格已紧凑化（小号字体+紧凑边距+占满宽度）。")
+        except Exception as exc:  # noqa: BLE001 - 紧凑化失败不影响主产物
+            notes.append(f"（表格紧凑化失败：{exc}）")
         if two_column:
             try:
                 _set_two_columns(out_path)
@@ -289,9 +464,78 @@ def convert_document_core(
         ts_note = _apply_typesetting_if_any(ctx, out_path)
         if ts_note:
             notes.append(ts_note)
+        # 宽表跨栏必须在所有分栏设置（含 typesetting 里的 apply_columns）**之后**，
+        # 否则新插的单栏岛 sectPr 会被 apply_columns 统一改回多栏而失效。
+        if two_column:
+            try:
+                spanned = _span_wide_tables(out_path)
+                if spanned:
+                    notes.append(f" {spanned} 张宽表已跨双栏铺满页宽。")
+            except Exception as exc:  # noqa: BLE001 - 跨栏失败不影响主产物
+                notes.append(f"（宽表跨栏失败：{exc}）")
 
     ctx.session.record("convert_document", source=src, to=to_format, files=[out_path])
+    # 记住源文件与本次产物到 profile：后续轮次「改双栏/调格式」等能凭记忆定位原文件，
+    # 不必用户每轮重贴路径（修「转完就忘了源文件」的记忆断层）。
+    try:
+        ctx.repo.update(ctx.workspace, _remember_source_mutation(src, out_path))
+    except Exception:  # noqa: BLE001 - 记忆写入失败不影响转换产物
+        pass
     return ConvertOutcome(ok=True, files=[out_path], notes=notes)
+
+
+def _prepare_latex_input(
+    src: str, from_format: str | None, output_dir: str, stem: str
+) -> tuple[str, str | None, str | None, list[str]]:
+    """LaTeX 源转换前预规整：在副本上折平 pandoc 不友好构造，原文件只读。
+
+    返回 ``(输入路径, 待清理临时路径 or None, 资源目录 or None, 说明片段)``：
+    - 非 LaTeX、读文件失败、或无需改动 → 原样用 ``src``（临时路径为 None）。
+    - 有改动 → 写规整后的临时副本到 ``output_dir``，资源目录指回原文件目录，使
+      ``\\input`` / 图片相对路径仍可解析。任何异常都安全降级为「用原文件」。
+    """
+    if from_format != "latex":
+        return src, None, None, []
+    try:
+        with open(src, "r", encoding="utf-8") as fh:
+            original = fh.read()
+    except (OSError, UnicodeDecodeError):
+        return src, None, None, []  # 读不了就别动，交原文件给 pandoc（不冒corrupt风险）
+
+    normalized, notes = normalize_latex_for_pandoc(original)
+    if normalized == original:
+        return src, None, None, []
+    try:
+        os.makedirs(output_dir, exist_ok=True)
+        tmp_path = os.path.join(output_dir, f"{stem}_normalized.tex")
+        with open(tmp_path, "w", encoding="utf-8") as fh:
+            fh.write(normalized)
+    except OSError:
+        return src, None, None, []  # 写临时副本失败 → 降级用原文件
+    resource_dir = os.path.dirname(os.path.abspath(src)) or "."
+    return tmp_path, tmp_path, resource_dir, notes
+
+
+def _cleanup_temp(path: str | None) -> None:
+    """删掉预规整临时副本（存在才删，失败静默——残留临时文件不影响正确性）。"""
+    if not path:
+        return
+    try:
+        if os.path.isfile(path):
+            os.remove(path)
+    except OSError:
+        pass
+
+
+def _remember_source_mutation(src: str, out_path: str):
+    """把源文件路径/扩展名与最近产物记入 ws.profile（供后续轮次定位，不动内容）。"""
+
+    def _mutate(ws) -> None:
+        ws.profile["source_document_path"] = src
+        ws.profile["source_document_ext"] = os.path.splitext(src)[1].lower()
+        ws.profile["last_output_path"] = out_path
+
+    return _mutate
 
 
 def _handle_convert(
