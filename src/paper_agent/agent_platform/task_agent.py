@@ -54,11 +54,21 @@ _SYSTEM_PROMPT = (
     "结构做语言润色」时，必须用 polish_latex_inplace（就地润色原 tex、保留 preamble/宏/"
     "公式/引用/图表）。绝不要用 import_draft + rewrite/polish_section + export_paper 那条"
     "路做「保格式润色」——它会从文本重建 docx/tex，导致用户原排版、宏与图表丢失。只有当"
-    "用户明确要「重写内容/从文本重新生成/新增引用」时才走重建路径。\n"
+    "用户明确要「重写内容/从文本重新生成」时才走重建路径。\n"
+    "4.1.1 保格式增补红线：当用户提供 .docx/.tex 且诉求是「在保留原格式的前提下**补写**"
+    "新章节（如引言）/ 在文末**加**参考文献」时，必须用 augment_document（就地在原文件插入"
+    "新内容，原有公式/表格/字体/编号/preamble 逐字保留，参考文献只插唯一一份）。绝不要用 "
+    "import_draft + add_section + export_paper 去做「保格式补内容」——那条路会拍平重建，"
+    "导致 docx 的公式(OMML)丢失、表格失真、参考文献重复。撰写新章节正文用纯文本/Markdown "
+    "传给 augment_document 的 sections 即可；原稿既有内容会被原样保留、绝不改动。\n"
     "4.2 跨格式转换红线：当用户要「把 X 格式转成 Y 格式」（如 .tex 转 docx、.docx 转 "
     "latex）时，必须用 convert_document（pandoc 直转，公式转成原生公式、章节结构保留，"
     "docx 还能设双栏）。**绝不要**用 import_draft + set_typesetting + export_paper 去做"
     "格式转换——那条路把 LaTeX 当纯文本重建，会导致公式变成裸符号、结构错乱。\n"
+    "4.3 通用代码工具边界：若装配了 run_python，它**只用于低风险长尾**（拼接/裁剪/缩放图片、"
+    "把图插入 docx、给某段设悬挂缩进、合并/拆分 PDF、从数据画图等）。**绝不**用 run_python 改"
+    "章节内容、加/核验引用、做保格式转换或就地增补——那些必须走各自的受控工具（护栏/引用核验/"
+    "convert_document/augment_document）。run_python 只能读写其工作目录、默认断网。\n"
     "5. 若任务超出可用工具的能力范围，如实告诉用户无法完成及原因，不要假装完成。\n"
     "6. 完成后，用简洁自然语言总结你实际做了什么；若只完成了一部分，明确说明已完成"
     "与未完成的部分。\n"
@@ -314,6 +324,7 @@ class TaskAgent:
 _TERMINAL_TOOLS = frozenset(
     {
         "convert_document",
+        "augment_document",
         "export_paper",
         "polish_docx_inplace",
         "polish_latex_inplace",
