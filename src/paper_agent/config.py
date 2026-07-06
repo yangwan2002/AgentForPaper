@@ -85,6 +85,34 @@ class Config:
     # 报告，不崩溃、不阻断润色。默认开启；关闭时润色行为逐字节不变。
     inplace_audit_enabled: bool = True
 
+    # 受沙箱约束的通用代码执行工具 run_python（sandboxed-run-python）：低风险长尾工具层
+    # （拼图/裁剪/画图/合并PDF/docx微操）。默认关闭（opt-in）——涉及执行代码，需显式启用。
+    # sandbox_backend ∈ auto|docker|subprocess：docker 强隔离(Windows 首选)；subprocess 弱
+    # 隔离(仅本地可信调试)；auto 有 docker 用 docker 否则回退 subprocess。指定 docker 但不可用
+    # 时拒绝注册（不静默降级）。绝不触碰引用/内容/格式的正确性核心。
+    run_python_enabled: bool = False
+    sandbox_backend: str = "auto"
+    sandbox_timeout_s: float = 30.0
+    sandbox_memory_mb: int = 512
+    sandbox_image: str = "python:3.12-slim"
+
+    # --- 视觉版面验收闸（visual-layout-acceptance） ---
+    # 主开关：允许启用该能力 + 同意其成本与（外部多模态 API 时的）数据外泄。默认关闭
+    # （opt-in）；关闭时收尾不做任何渲染 / 视觉调用，管线逐字节不变。它**不**表示「每轮
+    # 强制跑」——具体某轮是否触发由「本轮是否含版面相关操作」的确定性判定决定。
+    visual_acceptance_enabled: bool = False
+    # 多模态（vision）模型配置，独立于主文本 LLM；vlm_provider 为空表示未配置 → 优雅降级跳过。
+    vlm_provider: str = ""
+    vlm_model: str = ""
+    vlm_base_url: str | None = None
+    vlm_api_key_env: str = "PAPER_VLM_API_KEY"
+    # 有界重编辑轮数上限（视觉不满足时反馈重改的最多轮数）；渲染 DPI；送 VLM 的页数天花板。
+    visual_acceptance_max_rounds: int = 1
+    visual_render_dpi: int = 150
+    visual_max_pages: int = 6
+    # LibreOffice 可执行路径（Word 不可用时的回退渲染后端）；为空则在 PATH 中查找 soffice。
+    soffice_path: str | None = None
+
     llm_provider: str = "mock"
     llm_model: str = ""
     llm_base_url: str | None = None
@@ -275,5 +303,25 @@ class Config:
             invalid_maxq = True
         if invalid_maxq:
             self.max_clarifying_questions = 3
+
+        # 视觉版面验收参数：越界静默回退文档化默认（与忠实性/原创性同风格，不中断装配）。
+        try:
+            invalid_rounds = self.visual_acceptance_max_rounds < 0
+        except TypeError:
+            invalid_rounds = True
+        if invalid_rounds:
+            self.visual_acceptance_max_rounds = 1
+        try:
+            invalid_dpi = not (36 <= self.visual_render_dpi <= 600)
+        except TypeError:
+            invalid_dpi = True
+        if invalid_dpi:
+            self.visual_render_dpi = 150
+        try:
+            invalid_pages = self.visual_max_pages < 1
+        except TypeError:
+            invalid_pages = True
+        if invalid_pages:
+            self.visual_max_pages = 6
 
         return None

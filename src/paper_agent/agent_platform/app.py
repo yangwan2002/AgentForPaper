@@ -103,6 +103,20 @@ class PaperAgentApp:
     # 保格式润色的只读审计器（inplace-polish-audit）：非空时注入 InplacePolishWorkflow，
     # 润色同时附文献真伪 + 引用忠实性审计报告。None → 不审计（行为不变）。
     draft_auditor: object | None = None
+    # 受沙箱代码执行工具（sandboxed-run-python）：低风险长尾工具层。sandbox_runner 非空
+    # 且 run_python_enabled 时注册 run_python 工具。None → 不注册（行为不变）。
+    run_python_enabled: bool = False
+    sandbox_runner: object | None = None
+    sandbox_timeout_s: float = 30.0
+    sandbox_memory_mb: int = 512
+    # 视觉版面验收闸（visual-layout-acceptance）：vlm 非空且 visual_enabled 时注入 gate。
+    # None / 关闭 → ChatController 不做任何渲染/视觉调用（行为不变）。
+    vlm: LLMProvider | None = None
+    visual_enabled: bool = False
+    visual_max_rounds: int = 1
+    visual_dpi: int = 150
+    visual_max_pages: int = 6
+    soffice_path: str | None = None
 
     def __post_init__(self) -> None:
         validate_agent_config(self.agent_config)
@@ -147,6 +161,11 @@ class PaperAgentApp:
         router = workflows = None
         if self.routing_enabled:
             router, workflows = self._build_routing(ctx)
+        visual_gate = None
+        if self.visual_enabled and self.vlm is not None:
+            from paper_agent.agent_platform.visual.gate import VisualAcceptanceGate
+
+            visual_gate = VisualAcceptanceGate(self.vlm, soffice_path=self.soffice_path)
         return ChatController(
             agent, session, self.repo, ask_tool=ask_tool,
             output_dir=self.output_dir,
@@ -157,6 +176,11 @@ class PaperAgentApp:
             tool_context=ctx,
             routing_enabled=self.routing_enabled,
             confirm_threshold=self.routing_confidence_threshold,
+            visual_gate=visual_gate,
+            visual_enabled=self.visual_enabled and self.vlm is not None,
+            visual_max_rounds=self.visual_max_rounds,
+            visual_dpi=self.visual_dpi,
+            visual_max_pages=self.visual_max_pages,
         )
 
     # --- 内部 ---------------------------------------------------------------
@@ -270,6 +294,27 @@ class PaperAgentApp:
 
         register_convert_document(registry, ctx)
 
+        # 原稿就地增补（方案 C）：在原 .docx/.tex 上插入新章节 + 参考文献，保结构、
+        # 不重建、不丢公式——「给成品稿补引言/加文献并保格式」的正确路径。
+        from paper_agent.agent_platform.tools.augment_tool import (
+            register_augment_document,
+        )
+
+        register_augment_document(registry, ctx)
+
+        # 受沙箱代码执行（sandboxed-run-python）：低风险长尾工具层，仅在启用且后端可用时注册。
+        # 绝不触碰正确性核心——工具不接收 repo/gate，沙箱内代码改不了工作区。
+        if self.run_python_enabled and self.sandbox_runner is not None:
+            from paper_agent.agent_platform.tools.run_python_tool import (
+                register_run_python,
+            )
+
+            register_run_python(
+                registry, ctx, self.sandbox_runner,
+                default_timeout_s=self.sandbox_timeout_s,
+                default_memory_mb=self.sandbox_memory_mb,
+            )
+
         # 改工作区工具（经护栏 + 单一写路径）。
         register_rewrite_section(registry, ctx)
         register_polish_section(registry, ctx)
@@ -279,6 +324,15 @@ class PaperAgentApp:
         register_add_references(registry, ctx, search_tool)
         register_verify_existing_references(registry, ctx, self.verifier)
         register_set_typesetting(registry, ctx)
+
+        # 视觉版面校验的主动请求工具（visual-layout-acceptance）：仅在启用且配了多模态时
+        # 暴露给模型；关闭时不注册（行为不变）。确定性触发不依赖它。
+        if self.visual_enabled and self.vlm is not None:
+            from paper_agent.agent_platform.tools.check_layout_tool import (
+                register_check_layout,
+            )
+
+            register_check_layout(registry, ctx)
 
         # 复合工具：完整管线。
         register_run_full_pipeline(registry, ctx, self.pipeline_runner)
@@ -418,6 +472,28 @@ def build_agent_app(
             verifier, faith_agent, retrieval_available=retrieval_available
         )
 
+    # 受沙箱代码执行工具（sandboxed-run-python）：默认关闭;启用时按配置选后端,
+    # 指定 docker 不可用则拒绝(runner=None → 不注册,不静默降级)。
+    sandbox_runner = None
+    if bool(getattr(config, "run_python_enabled", False)):
+        from paper_agent.agent_platform.sandbox import select_sandbox
+
+        sandbox_runner, _note = select_sandbox(
+            getattr(config, "sandbox_backend", "auto"),
+            image=getattr(config, "sandbox_image", "python:3.12-slim"),
+        )
+
+    # 视觉版面验收闸（visual-layout-acceptance）：默认关；开启时构造独立多模态 provider，
+    # 未配置多模态（vlm 为 None）时 gate 侧优雅降级、不触发。
+    vlm = None
+    if bool(getattr(config, "visual_acceptance_enabled", False)):
+        from paper_agent.providers.factory import build_vlm_provider
+
+        try:
+            vlm = build_vlm_provider(config)
+        except Exception:  # noqa: BLE001 - 多模态装配失败 → 降级为不启用（不拖垮装配）
+            vlm = None
+
     return PaperAgentApp(
         llm=agent_llm,
         repo=repo,
@@ -443,6 +519,18 @@ def build_agent_app(
         ),
         # 保格式润色只读审计器（inplace-polish-audit）。
         draft_auditor=draft_auditor,
+        # 受沙箱代码执行工具（sandboxed-run-python）。
+        run_python_enabled=bool(getattr(config, "run_python_enabled", False)),
+        sandbox_runner=sandbox_runner,
+        sandbox_timeout_s=float(getattr(config, "sandbox_timeout_s", 30.0)),
+        sandbox_memory_mb=int(getattr(config, "sandbox_memory_mb", 512)),
+        # 视觉版面验收闸（visual-layout-acceptance）。
+        vlm=vlm,
+        visual_enabled=bool(getattr(config, "visual_acceptance_enabled", False)) and vlm is not None,
+        visual_max_rounds=int(getattr(config, "visual_acceptance_max_rounds", 1)),
+        visual_dpi=int(getattr(config, "visual_render_dpi", 150)),
+        visual_max_pages=int(getattr(config, "visual_max_pages", 6)),
+        soffice_path=getattr(config, "soffice_path", None),
     )
 
 

@@ -21,6 +21,7 @@ traces/
 problem/
 问题清单.md
 ir.txt
+mem.txt
 
 
 # 测试/运行遗留在仓库根的产物（hex 命名的工作区导出物）——兜底，防污染

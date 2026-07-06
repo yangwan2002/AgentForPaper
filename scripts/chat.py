@@ -54,6 +54,11 @@ def _build_config() -> Config:
         # 供出问题时用 scripts/trace_view.py 定位是哪一步。设 PAPER_TRACING=0 关闭。
         tracing_enabled=os.environ.get("PAPER_TRACING", "1") != "0",
         trace_content_level=os.environ.get("PAPER_TRACE_LEVEL", "full"),
+        # 通用代码执行工具 run_python（低风险长尾：拼图/插图/调段落格式等）默认开启，
+        # 用操作系统子进程隔离（锁工作目录 + 超时；本机单人够用，隔离弱）。
+        # 设 PAPER_RUN_PYTHON=0 关闭；PAPER_SANDBOX_BACKEND=docker 可切强隔离（需 Docker）。
+        run_python_enabled=os.environ.get("PAPER_RUN_PYTHON", "1") != "0",
+        sandbox_backend=os.environ.get("PAPER_SANDBOX_BACKEND", "subprocess"),
     )
 
 
