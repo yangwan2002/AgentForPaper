@@ -325,6 +325,11 @@ class PaperAgentApp:
         register_verify_existing_references(registry, ctx, self.verifier)
         register_set_typesetting(registry, ctx)
 
+        # 图浮动排版工具：把某张图设为浮动/页顶/跨栏满宽/上下环绕（对标 figure*[t]）。
+        from paper_agent.agent_platform.tools.float_figure_tool import register_float_figure
+
+        register_float_figure(registry, ctx)
+
         # 视觉版面校验的主动请求工具（visual-layout-acceptance）：仅在启用且配了多模态时
         # 暴露给模型；关闭时不注册（行为不变）。确定性触发不依赖它。
         if self.visual_enabled and self.vlm is not None:
