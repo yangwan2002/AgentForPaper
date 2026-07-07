@@ -55,10 +55,11 @@ def test_compact_tables_sets_small_font_margins_and_width(tmp_path):
         mar = tbl_pr.find(qn("w:tblCellMar"))
         assert mar is not None
         assert mar.find(qn("w:left")).get(qn("w:w")) == "40"
-        # 表宽占满容器（pct 5000 = 100%）。
+        # 表宽为固定布局 dxa（按内容比例分列宽，取代 autofit 乱猜）。
         tbl_w = tbl_pr.find(qn("w:tblW"))
-        assert tbl_w.get(qn("w:type")) == "pct"
-        assert tbl_w.get(qn("w:w")) == "5000"
+        assert tbl_w.get(qn("w:type")) == "dxa"
+        assert int(tbl_w.get(qn("w:w"))) > 0
+        assert tbl_pr.find(qn("w:tblLayout")).get(qn("w:type")) == "fixed"
 
 
 def test_span_wide_only_wraps_tables_at_or_above_threshold(tmp_path):
@@ -77,6 +78,47 @@ def test_narrow_table_not_spanned(tmp_path):
     spanned = _span_wide_tables(path)
     assert spanned == 0
     assert _para_sectpr_cols(path) == []  # 无新增段落级分节符
+
+
+def test_content_proportional_widths_and_nowrap(tmp_path):
+    """按内容比例分列宽（固定布局）+ 短单元格禁折行，取代 Word autofit 乱猜。"""
+    from paper_agent.agent_platform.tools.convert_tool import _compact_tables
+
+    d = docx.Document()
+    t = d.add_table(rows=2, cols=3)
+    # 第 2 列内容明显更长 → 应分到更宽的列宽。
+    t.rows[0].cells[0].text = "N"
+    t.rows[0].cells[1].text = "共视比例区间"
+    t.rows[0].cells[2].text = "值"
+    t.rows[1].cells[0].text = "174"
+    t.rows[1].cells[1].text = "s in [0.010, 0.050]"
+    t.rows[1].cells[2].text = "0.856"
+    path = str(tmp_path / "w.docx")
+    d.save(path)
+
+    _compact_tables(path)
+
+    d2 = docx.Document(path)
+    tbl = d2.tables[0]._tbl
+    # 固定布局。
+    assert tbl.tblPr.find(qn("w:tblLayout")).get(qn("w:type")) == "fixed"
+    grid = tbl.find(qn("w:tblGrid"))
+    widths = [int(gc.get(qn("w:w"))) for gc in grid.findall(qn("w:gridCol"))]
+    assert len(widths) == 3
+    # 最长内容的第 2 列列宽 > 短列（N / 值）。
+    assert widths[1] > widths[0] and widths[1] > widths[2]
+    # 短无空格单元格（"N"/"174"/"值"/"0.856"）应带 noWrap。
+    c0 = d2.tables[0].rows[1].cells[0]._tc
+    assert c0.get_or_add_tcPr().find(qn("w:noWrap")) is not None
+
+
+def test_section_text_width_twips_default(tmp_path):
+    """取不到 section 尺寸时回退到合理默认，且正常文档返回版心宽区间内的值。"""
+    from paper_agent.agent_platform.tools.convert_tool import _section_text_width_twips
+
+    d = docx.Document()
+    w = _section_text_width_twips(d)
+    assert 1440 <= w <= 20000
 
 
 def test_span_preserves_page_size_from_body_sectpr(tmp_path):

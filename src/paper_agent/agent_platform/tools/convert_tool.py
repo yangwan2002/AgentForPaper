@@ -210,11 +210,10 @@ def _compact_tables(docx_path: str) -> int:
     Word 默认用正文字号 + 宽边距 + 无列宽指引渲染多列表，导致每格逐字符折行。返回表格数。
     """
     import docx  # noqa: WPS433
-    from docx.oxml import OxmlElement
-    from docx.oxml.ns import qn
     from docx.shared import Pt
 
     document = docx.Document(docx_path)
+    text_width_twips = _section_text_width_twips(document)
     count = 0
     for table in document.tables:
         for row in table.rows:
@@ -223,17 +222,101 @@ def _compact_tables(docx_path: str) -> int:
                     for run in para.runs:
                         run.font.size = Pt(_TABLE_FONT_PT)
         _set_table_cell_margins(table, _TABLE_CELL_MARGIN_TWIPS)
-        # 表格首选宽度 = 占满容器（pct 100%）；配合 autofit 由 Word 按内容分配列宽。
-        tbl_pr = table._tbl.tblPr
-        tbl_w = tbl_pr.find(qn("w:tblW"))
-        if tbl_w is None:
-            tbl_w = OxmlElement("w:tblW")
-            tbl_pr.append(tbl_w)
-        tbl_w.set(qn("w:w"), "5000")
-        tbl_w.set(qn("w:type"), "pct")
+        # 关键修复：按内容比例给各列分配明确宽度（固定布局），而不是丢给 Word autofit
+        # 乱猜——后者会把「区间/标签」列压太窄导致逐字符/逐词折行。同时对短单元格禁折行。
+        _apply_content_proportional_widths(table, text_width_twips)
         count += 1
     document.save(docx_path)
     return count
+
+
+# 一个显示宽度单位 ≈ 一个西文字符；CJK 记 2 单位（更接近实际占宽）。
+def _display_width(text: str) -> int:
+    width = 0
+    for ch in text or "":
+        width += 2 if ord(ch) >= 0x2E80 else 1
+    return width
+
+
+def _section_text_width_twips(document) -> int:
+    """版心宽（页宽 − 左右页边距）换算成 twips；取不到时回退 A4 版心近似值。"""
+    try:
+        sec = document.sections[0]
+        emu = int(sec.page_width) - int(sec.left_margin) - int(sec.right_margin)
+        twips = emu // 635  # 1 twip = 635 EMU
+        if 1440 <= twips <= 20000:
+            return twips
+    except Exception:  # noqa: BLE001 - 取不到 section 尺寸 → 回退
+        pass
+    return 9200  # ≈ A4 版心（21cm − 2×2.54cm）的 twips 近似
+
+
+def _apply_content_proportional_widths(table, total_twips: int) -> None:
+    """按各列内容长度比例分配列宽（固定布局），并对无空格短单元格禁折行。
+
+    列权重 = 该列所有单元格显示宽度的最大值（表头+正文），据此把 ``total_twips`` 按比例
+    分给各列（每列给个下限，避免某列被压没）。这样「区间 / 标签」等长内容列拿到足够宽度、
+    不再逐词折行；``N`` 等短列不浪费宽度。取代 pandoc 转出后 Word autofit 的糟糕猜测。
+    """
+    from docx.oxml import OxmlElement
+    from docx.oxml.ns import qn
+
+    tbl = table._tbl
+    grid = tbl.find(qn("w:tblGrid"))
+    if grid is None:
+        return
+    grid_cols = grid.findall(qn("w:gridCol"))
+    ncols = len(grid_cols)
+    if ncols == 0:
+        return
+
+    # 各列权重 = 列内单元格显示宽度的最大值（含少量内边距余量）。
+    weights = [1] * ncols
+    for row in table.rows:
+        cells = row.cells
+        for j in range(min(ncols, len(cells))):
+            w = _display_width(cells[j].text.strip()) + 2  # +2 余量
+            if w > weights[j]:
+                weights[j] = w
+    total_weight = sum(weights) or ncols
+
+    min_col = 500  # 每列宽度下限（twips，≈0.35cm），防某列被压没
+    usable = max(total_twips, min_col * ncols)
+    col_twips = [max(min_col, round(usable * wt / total_weight)) for wt in weights]
+
+    # 固定布局 + 表宽 = 各列之和（dxa）。
+    tbl_pr = tbl.tblPr
+    layout = tbl_pr.find(qn("w:tblLayout"))
+    if layout is None:
+        layout = OxmlElement("w:tblLayout")
+        tbl_pr.append(layout)
+    layout.set(qn("w:type"), "fixed")
+    tbl_w = tbl_pr.find(qn("w:tblW"))
+    if tbl_w is None:
+        tbl_w = OxmlElement("w:tblW")
+        tbl_pr.append(tbl_w)
+    tbl_w.set(qn("w:type"), "dxa")
+    tbl_w.set(qn("w:w"), str(sum(col_twips)))
+
+    # 写 gridCol 宽度（gridCol 只有 w:w，无 type 属性）。
+    for j, gc in enumerate(grid_cols):
+        gc.set(qn("w:w"), str(col_twips[j]))
+
+    # 写每个单元格的 tcW = 对应列宽；无空格短内容单元格加 noWrap（防「关联类型/UAV–Relay」折行）。
+    for row in table.rows:
+        cells = row.cells
+        for j in range(min(ncols, len(cells))):
+            tc_pr = cells[j]._tc.get_or_add_tcPr()
+            tc_w = tc_pr.find(qn("w:tcW"))
+            if tc_w is None:
+                tc_w = OxmlElement("w:tcW")
+                tc_pr.append(tc_w)
+            tc_w.set(qn("w:w"), str(col_twips[j]))
+            tc_w.set(qn("w:type"), "dxa")
+            txt = cells[j].text.strip()
+            if txt and " " not in txt and _display_width(txt) <= 14:
+                if tc_pr.find(qn("w:noWrap")) is None:
+                    tc_pr.append(OxmlElement("w:noWrap"))
 
 
 def _set_table_cell_margins(table, twips: int) -> None:
