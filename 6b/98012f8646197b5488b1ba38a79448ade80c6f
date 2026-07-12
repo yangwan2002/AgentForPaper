@@ -1,0 +1,39 @@
+src/paper_agent/ingestion/sections.py
+  s_9b19e02a147443::t_600cda54c1cce0 33-41,43-94,96-98
+  s_9b19e02a147443::t_bdc4cbdf02523a 42
+  s_9b19e02a147443::t_20cf318f6a3ad6 179
+  s_9b19e02a147443::t_6a6527a3d3e4d7 189
+  s_9b19e02a147443::t_ad9608cc2ba760 95
+src/paper_agent/ingestion/quality.py
+  s_9b19e02a147443::t_33b297f563d707 82
+  s_9b19e02a147443::t_9162db8be2931f 143-145
+  s_9b19e02a147443::t_cf222ce49f67c6 53-55
+  s_9b19e02a147443::t_f7fe20238362c8 13
+  s_9b19e02a147443::t_78c46397e9554d 64-74
+tests/test_ingestion.py
+  s_9b19e02a147443::t_9cca495608eab8 13
+  s_9b19e02a147443::t_69f41122f67f1b 213,219
+  s_9b19e02a147443::t_6b495ab7384a80 181-212,214-218,220-221
+src/paper_agent/ingestion/__init__.py
+  s_9b19e02a147443::t_9e755793b1db58 21
+  s_9b19e02a147443::t_1121c82c0fa316 65
+src/paper_agent/ingestion/loaders.py
+  s_9b19e02a147443::t_ddf25857b7e63f 23
+  s_9b19e02a147443::t_2383fd19978616 254-255
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.33-trip",
+  "base_commit_sha": "6b98012f8646197b5488b1ba38a79448ade80c6f",
+  "prompts": {},
+  "sessions": {
+    "s_9b19e02a147443": {
+      "agent_id": {
+        "tool": "cursor",
+        "id": "02551d0d-bbff-40a6-99f6-c233e0b02891",
+        "model": "default"
+      },
+      "human_author": "yangwan <yangwan@trip.com>"
+    }
+  }
+}
