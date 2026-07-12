@@ -68,7 +68,8 @@ def test_split_academic_sections_roman_letter_numbered():
     triples = split_academic_sections(text)
     titles = [t for _sid, t, _c in triples]
     assert "I. 方法" in titles
-    assert "A. 问题定义" in titles
+    assert "A. 问题定义" not in titles
+    assert "A. 问题定义" in triples[0][2]
     assert "II. 实验与结果" in titles
 
 
@@ -87,10 +88,11 @@ def test_split_academic_rejects_table_number_rows():
     )
     triples = split_academic_sections(text)
     titles = [t for _sid, t, _c in triples]
-    # 只识别出两个真标题，数字行归入正文。
-    assert titles == ["II. 实验", "A. 消融"]
+    # 字母子节与数字表格行均归入顶级实验章节正文。
+    assert titles == ["II. 实验"]
     body = triples[0][2]
     assert "0.856 0.894 0.922" in body  # 数字行保留在实验章节正文里
+    assert "A. 消融" in body
 
 
 def test_split_academic_rejects_sentence_starting_with_letter():
@@ -100,7 +102,8 @@ def test_split_academic_rejects_sentence_starting_with_letter():
     text = "A. 方法\n正文。\nA novel approach without period\n更多正文。\n"
     triples = split_academic_sections(text)
     titles = [t for _sid, t, _c in triples]
-    assert titles == ["A. 方法"]
+    assert titles == ["正文"]
+    assert "A. 方法" in triples[0][2]
 
 
 def test_import_draft_missing_file():
@@ -120,6 +123,22 @@ def test_import_draft_strips_quotes(tmp_path):
     # 用户常把带引号的路径贴进来。
     out = registry.call("import_draft", path=f'"{md}"')
     assert "已导入" in out
+
+
+def test_import_draft_returns_confirmation_required_then_accepts_confirm(tmp_path):
+    md = tmp_path / "unstructured.md"
+    md.write_text("Readable academic prose. " * 220, encoding="utf-8")
+    ctx = _ctx()
+    registry = ToolRegistry()
+    register_import_draft(registry, ctx)
+
+    first = registry.call("import_draft", path=str(md))
+    assert "confirmation_required" in first
+    assert ctx.repo.load("w1").original_draft is None
+
+    second = registry.call("import_draft", path=str(md), confirm=True)
+    assert "已导入" in second
+    assert ctx.repo.load("w1").original_draft
 
 
 # --- add_section -------------------------------------------------------------

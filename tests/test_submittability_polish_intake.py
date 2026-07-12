@@ -210,6 +210,29 @@ def test_polish_applies_when_guards_pass():
     assert ws.section_drafts["m"].content == polished
 
 
+def test_polish_only_processes_sections_modified_this_round():
+    first = "第一节保留数字 1。"
+    first_polished = "第一节仍保留数字 1。"
+    second = "第二节保留数字 2。"
+    second_polished = "第二节仍保留数字 2。"
+    ws = _ws({"first": first, "second": second})
+    ws.profile["modified_section_ids"] = ["first"]
+    agent = LanguagePolishAgent(
+        _ScriptedLLM(
+            {
+                first: first_polished,
+                second: second_polished,
+            }
+        ),
+        is_mock=False,
+    )
+    result = agent.run(AgentContext(workspace=ws))
+    for mutation in result.mutations:
+        mutation(ws)
+    assert ws.section_drafts["first"].content == first_polished
+    assert ws.section_drafts["second"].content == second
+
+
 def test_polish_rejects_when_citation_dropped():
     original = "我们提出方法 [r1]，准确率 95.6%。"
     bad = "我们提出方法，准确率 95.6%。"  # 丢了 [r1]

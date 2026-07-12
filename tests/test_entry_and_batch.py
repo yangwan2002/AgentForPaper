@@ -135,3 +135,24 @@ def test_cli_yes_flag_parsed():
     rr = _load_run_real()
     args = rr._parse_args(["x.md", "--yes"])
     assert args.yes is True
+
+
+def test_cli_ingestion_confirmation_is_interactive_only(tmp_path, monkeypatch):
+    rr = _load_run_real()
+    draft = tmp_path / "unstructured.md"
+    draft.write_text("Readable academic prose. " * 220, encoding="utf-8")
+
+    with pytest.raises(SystemExit, match="非交互模式拒绝"):
+        rr._confirm_draft_ingestion(str(draft), interactive=False)
+
+    monkeypatch.setattr("builtins.input", lambda _prompt: "y")
+    assert rr._confirm_draft_ingestion(str(draft), interactive=True) is True
+
+
+def test_cli_preflight_rejects_corruption_before_dispatch(tmp_path):
+    rr = _load_run_real()
+    broken = tmp_path / "broken.tex"
+    broken.write_text("\ufffd" * 120, encoding="utf-8")
+
+    with pytest.raises(SystemExit, match="摄入质量检查失败"):
+        rr._confirm_draft_ingestion(str(broken), interactive=True)

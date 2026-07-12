@@ -23,7 +23,7 @@ from paper_agent.context.tokenizer import build_token_counter
 from paper_agent.export.format_gate import FormatGate
 from paper_agent.export.format_repair import FormatRepairLoop
 from paper_agent.hooks import Hooks
-from paper_agent.observability.events import Event, EventKind, EventSink
+from paper_agent.observability.events import Event, EventKind, EventSink, NullSink
 from paper_agent.observability.llm_wrapper import ObservableLLMProvider
 from paper_agent.observability.usage import UsageTracker
 from paper_agent.orchestrator import Orchestrator
@@ -32,6 +32,7 @@ from paper_agent.providers.factory import (
     build_llm_provider,
     build_retrieval_provider,
     build_reviewer_llm_provider,
+    reviewer_model_is_diverse,
 )
 from paper_agent.providers.llm.base import LLMProvider
 from paper_agent.providers.llm.mock import MockLLMProvider
@@ -50,12 +51,21 @@ def _wrap_llm_stack(
     sink: EventSink | None,
     tracker: UsageTracker | None,
     preview_chars: int = 500,
+    token_cap: int = 0,
+    role: str = "unspecified",
+    completion_reserve_tokens: int = 4096,
 ) -> LLMProvider:
     """统一装配 Observable(Resilient(base)) 调用栈。"""
     stack: LLMProvider = ResilientLLMProvider(base, policy, sink)
-    if sink is not None:
+    if sink is not None or tracker is not None or token_cap > 0:
         stack = ObservableLLMProvider(
-            stack, sink, tracker, preview_chars=preview_chars
+            stack,
+            sink or NullSink(),
+            tracker,
+            preview_chars=preview_chars,
+            token_cap=token_cap,
+            role=role,
+            completion_reserve_tokens=completion_reserve_tokens,
         )
     return stack
 
@@ -97,7 +107,16 @@ def build_orchestrator(
         jitter=config.retry_jitter,
     )
     preview_chars = config.event_preview_chars
-    writer_llm = _wrap_llm_stack(writer_base, policy, sink, tracker, preview_chars)
+    writer_llm = _wrap_llm_stack(
+        writer_base,
+        policy,
+        sink,
+        tracker,
+        preview_chars,
+        config.total_token_budget,
+        "writer",
+        config.llm_completion_token_reserve,
+    )
 
     # Round 4：reviewer 用独立的 LLM 实例（打破自评 reward-hack）。
     # 未显式传入时回退 writer——记一条警示日志便于发现配置遗漏。
@@ -114,6 +133,15 @@ def build_orchestrator(
             "为 reviewer 指定独立模型/端点；若确需同模型自评，请显式设置 "
             "Config.allow_self_review=True。"
         )
+    if (
+        not is_mock
+        and config.require_reviewer_model_diversity
+        and not reviewer_model_is_diverse(config)
+    ):
+        raise ValueError(
+            "拒绝装配：独立 reviewer 必须显式配置与 writer 不同的 "
+            "reviewer_llm_model；仅创建同模型的独立实例不能消除相关性偏差。"
+        )
     if reviewer_base is writer_base and not is_mock and config.allow_self_review and sink is not None:
         sink.emit(
             Event(
@@ -124,12 +152,17 @@ def build_orchestrator(
                 ),
             )
         )
-    if reviewer_base is not writer_base:
-        reviewer_llm_stack = _wrap_llm_stack(
-            reviewer_base, policy, sink, tracker, preview_chars
-        )
-    else:
-        reviewer_llm_stack = writer_llm
+    # 即使底层 provider 相同也单独包装，确保 writer/reviewer 用量可分账。
+    reviewer_llm_stack = _wrap_llm_stack(
+        reviewer_base,
+        policy,
+        sink,
+        tracker,
+        preview_chars,
+        config.total_token_budget,
+        "reviewer",
+        config.llm_completion_token_reserve,
+    )
 
     # 共享结构化解析器：包装装饰后的 LLM 栈，供需要 JSON 解析的智能体统一复用（Req 3.9）。
     # is_mock 由解析器实例一次性持有（#12），各智能体调用 request_json 时无需再传。
@@ -170,10 +203,25 @@ def build_orchestrator(
     # 自动纳入统计）。关闭时传 None → 不接入反馈闭环，行为逐字节不变（Req 8.1/8.2）。
     faithfulness_agent = None
     if config.citation_faithfulness_enabled:
+        faithfulness_llm_stack = _wrap_llm_stack(
+            reviewer_base,
+            policy,
+            sink,
+            tracker,
+            preview_chars,
+            config.total_token_budget,
+            "faithfulness",
+            config.llm_completion_token_reserve,
+        )
+        faithfulness_parser = StructuredParser(
+            faithfulness_llm_stack, is_mock=reviewer_is_mock
+        )
         faithfulness_agent = CitationFaithfulnessAgent(
-            FaithfulnessJudge(reviewer_parser),
+            FaithfulnessJudge(faithfulness_parser),
             min_grounding_chars=config.min_grounding_chars,
             token_budget=config.faithfulness_token_budget,
+            max_claims=config.faithfulness_max_claims,
+            deadline_s=config.faithfulness_screen_deadline_s,
             is_mock=reviewer_is_mock,
             sink=sink,
         )

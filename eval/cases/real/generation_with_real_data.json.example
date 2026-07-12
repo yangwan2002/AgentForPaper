@@ -1,0 +1,26 @@
+{
+  "id": "real_generation_001",
+  "description": "复制本文件为 .json，并将 artifact_dir 指向真实或脱敏研究数据目录。",
+  "requires_real_providers": true,
+  "tags": ["real", "generation", "accuracy"],
+  "input": {
+    "topic_background": "替换为真实研究主题",
+    "artifact_dir": "../../fixtures/real/my_research_artifact",
+    "output_format": "latex",
+    "profile": {
+      "venue_id": "default",
+      "language": "zh"
+    }
+  },
+  "assertions": {
+    "run_completed": true,
+    "export_created": true,
+    "expected_format": "latex",
+    "max_fabricated_citations": 0,
+    "max_fabricated_metrics": 0,
+    "max_unsupported_citations": 0,
+    "max_cannot_verify_citations": 0,
+    "max_empty_sections": 0,
+    "min_verified_references": 1
+  }
+}

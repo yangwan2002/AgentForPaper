@@ -19,6 +19,8 @@
 
 from __future__ import annotations
 
+import json
+
 from paper_agent.agents.base import Agent, AgentContext, AgentResult
 from paper_agent.context.tokenizer import TokenCounter, build_token_counter
 from paper_agent.parsing.structured_parser import StructuredParser
@@ -31,6 +33,7 @@ from paper_agent.workspace.models import (
     ScoringDimension,
 )
 from paper_agent.workspace.paper_view import assemble_paper_text
+from paper_agent.tools.quality_gate import QualityGate
 
 # 评分量表下限：失败/空论文路径将四维度全部置此值，严格低于达标阈值（默认 8.0）。
 _SCALE_FLOOR = 0.0
@@ -85,11 +88,19 @@ class ReviewAgent(Agent):
             record = self._failed_review(iteration, reason="空论文，无可评审内容")
             return self._wrap(record, iteration)
 
+        artifact_contract = ""
+        if ws.artifact is not None and not ws.artifact.is_empty():
+            artifact_contract = ws.artifact.contract().compact_context()
+        deterministic = QualityGate().check(ws)
         outcome = self._parser.request_json(
             templates.review_paper(
                 paper_text=paper_text,
                 dimensions=[d.value for d in ScoringDimension],
                 section_rubrics=self._section_rubrics(ws),
+                artifact_contract=artifact_contract,
+                deterministic_report=json.dumps(
+                    deterministic.high_issues, ensure_ascii=False
+                ),
             ),
             required_keys=("scores",),
         )

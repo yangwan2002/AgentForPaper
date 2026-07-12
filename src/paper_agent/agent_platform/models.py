@@ -48,6 +48,7 @@ class WritingTask:
     topic_background: str | None = None
     artifact: "ResearchArtifact | None" = None
     profile: dict = field(default_factory=dict)
+    confirm_ingestion: bool = False
 
     def has_instruction(self) -> bool:
         """``instruction`` 是否为「已提供」（非空且非纯空白）（Req 1.4）。"""

@@ -9,6 +9,8 @@
 
 from __future__ import annotations
 
+import threading
+import time
 from dataclasses import dataclass, field
 from typing import Iterator, Protocol, runtime_checkable
 
@@ -85,16 +87,42 @@ class CancellationToken:
     """
 
     def __init__(self) -> None:
-        self._cancelled = False
+        self._cancelled = threading.Event()
 
     def cancel(self) -> None:
         """请求取消。可被多次调用，幂等。"""
-        self._cancelled = True
+        self._cancelled.set()
 
     @property
     def cancelled(self) -> bool:
         """是否已被请求取消。"""
-        return self._cancelled
+        return self._cancelled.is_set()
+
+
+class CombinedCancellationToken(CancellationToken):
+    """Cancellation requested locally, by a caller token, or by a deadline."""
+
+    def __init__(
+        self,
+        parent: CancellationToken | None = None,
+        *,
+        deadline_at: float | None = None,
+    ) -> None:
+        super().__init__()
+        self._parent = parent
+        self._deadline_at = deadline_at
+
+    @property
+    def deadline_reached(self) -> bool:
+        return self._deadline_at is not None and time.monotonic() >= self._deadline_at
+
+    @property
+    def cancelled(self) -> bool:
+        return (
+            super().cancelled
+            or (self._parent is not None and self._parent.cancelled)
+            or self.deadline_reached
+        )
 
 
 @runtime_checkable

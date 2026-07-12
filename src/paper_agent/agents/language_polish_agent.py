@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 from paper_agent.agents.base import Agent, AgentContext, AgentResult
+from paper_agent.observability.budget import current_run_budget
 from paper_agent.prompts import templates
 from paper_agent.providers.llm.base import LLMProvider
 from paper_agent.tools import polish_guards
@@ -50,7 +51,17 @@ class LanguagePolishAgent(Agent):
         glossary_terms = self._glossary_block(ws)
         polished: dict[str, str] = {}
         logs: list[str] = []
+        selected_raw = ws.profile.get("modified_section_ids")
+        selected = set(selected_raw) if selected_raw is not None else None
+        if selected is not None and not selected:
+            return AgentResult(logs=["语言润色：本轮没有实际修改章节，已跳过"])
         for node in ws.ordered_sections():
+            if selected is not None and node.section_id not in selected:
+                continue
+            budget = current_run_budget()
+            if budget is not None and budget.remaining_s < 120:
+                logs.append("语言润色：剩余截止时间不足 120 秒，跳过后续章节")
+                break
             draft = ws.section_drafts.get(node.section_id)
             if draft is None or not draft.content.strip():
                 continue
@@ -70,7 +81,10 @@ class LanguagePolishAgent(Agent):
                 if sid in w.section_drafts:
                     w.section_drafts[sid].content = content
 
-        logs.append(f"语言润色：改写 {len(polished)} 个章节（已通过保真守卫）")
+        logs.append(
+            f"语言润色：仅处理本轮修改章节，改写 {len(polished)} 个章节"
+            "（已通过保真守卫）"
+        )
         return AgentResult(mutations=[mutate], logs=logs)
 
     # --- 内部 ---

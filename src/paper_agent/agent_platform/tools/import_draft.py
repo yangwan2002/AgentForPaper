@@ -11,13 +11,13 @@
 from __future__ import annotations
 
 import os
-import re
 
 from paper_agent.agent_platform.tools.context import ToolContext
 from paper_agent.ingestion import (
     DocumentLoadError,
-    load_document,
-    split_draft_into_sections,
+    IngestionConfirmationRequired,
+    ingest_document,
+    split_academic_sections,
 )
 from paper_agent.tools.registry import ToolRegistry
 from paper_agent.workspace.models import (
@@ -33,7 +33,12 @@ _IMPORT_SCHEMA = {
         "path": {
             "type": "string",
             "description": "本地论文文件的绝对路径，支持 pdf/docx/tex/md/txt。",
-        }
+        },
+        "confirm": {
+            "type": "boolean",
+            "default": False,
+            "description": "仅在此前收到 confirmation_required 后，由用户明确确认继续时设为 true。",
+        },
     },
     "required": ["path"],
 }
@@ -45,85 +50,19 @@ _IMPORT_DESCRIPTION = (
 )
 
 
-def load_sections(path: str, asset_dir: str | None = None):
-    """加载文档并切分章节，返回 (全文文本, [(section_id, title, content), ...])。
-
-    先用共享的 Markdown/LaTeX 标题切分；若只得到单个「正文」（常见于 PDF 抽取的
-    无标题层级文本），再用学术标题启发式（数字编号 / 第 N 章 / 常见章节词）兜底切分。
-    """
-    text = load_document(path, asset_dir=asset_dir)
-    triples = split_draft_into_sections(text)
-    if len(triples) <= 1:
-        academic = split_academic_sections(text)
-        if len(academic) > 1:
-            triples = academic
-    return text, triples
-
-
-# 常见学术章节标题词（小写匹配，覆盖中英文）。
-_SECTION_WORDS = frozenset({
-    "摘要", "abstract", "引言", "绪论", "introduction", "相关工作", "related work",
-    "背景", "background", "方法", "研究方法", "methodology", "method", "methods",
-    "approach", "实验", "实验与分析", "实验部分", "experiments", "experiment",
-    "实验结果", "结果", "results", "讨论", "discussion", "结论", "总结",
-    "conclusion", "conclusions", "参考文献", "references", "致谢",
-})
-
-# 学术标题行匹配。关键防误报：编号后的标题必须**以文字开头**（``[^\W\d_]`` 即字母
-# 或中文，非数字/符号），从而排除表格数字行（如 "0.856 0.894"、"18.6%"）被误当标题。
-# 数字编号（"1 引言" / "3.2 特征匹配"）：层级 ≤4、每级 ≤2 位（真章节号都很小）。
-_NUMBERED = re.compile(r"^(\d{1,2}(?:\.\d{1,2}){0,3})[\s、.]+([^\W\d_].{0,34})$")
-# 罗马数字 / 字母编号（"I. 方法" / "II. 实验与结果分析" / "A. 实验平台"）：编号后须带
-# 句点再接文字标题——排除句首的 "A novel ..." 这类正文行。
-_LETTER_ROMAN = re.compile(r"^([IVXLCDM]{1,4}|[A-Z])\.\s+([^\W\d_].{0,34})$")
-# 中文章节："第3章 方法" / "第一章"。
-_CN_CHAPTER = re.compile(r"^第[一二三四五六七八九十百千\d]+[章节][\s：:、]*(.{0,36})$")
-# 结尾若是正文标点，则该行更像句子而非标题。
-_SENTENCE_END = ("。", "，", "、", "；", "：", ".", ",", ";", ":")
-
-
-def _is_academic_heading(line: str) -> bool:
-    """判断一行是否像学术章节标题（短、无句末标点、命中编号/章节词）。"""
-    s = line.strip()
-    if not s or len(s) > 40 or s.endswith(_SENTENCE_END):
-        return False
-    if _NUMBERED.match(s) or _LETTER_ROMAN.match(s) or _CN_CHAPTER.match(s):
-        return True
-    return s.lower().strip("：: .。") in _SECTION_WORDS
-
-
-def split_academic_sections(text: str) -> list[tuple[str, str, str]]:
-    """按学术标题启发式把文本切成 [(section_id, title, content), ...]。
-
-    无法识别任何标题时返回单个「正文」段，保证不丢内容（与共享切分器语义一致）。
-    """
-    if not text or not text.strip():
-        return []
-    sections: list[tuple[str, str, str]] = []
-    cur_title: str | None = None
-    cur_body: list[str] = []
-
-    def _flush() -> None:
-        if cur_title is None:
-            return
-        sections.append((f"sec_{len(sections)}", cur_title, "\n".join(cur_body).strip()))
-
-    for line in text.splitlines():
-        if _is_academic_heading(line):
-            _flush()
-            cur_title = line.strip()
-            cur_body = []
-        else:
-            cur_body.append(line)
-    _flush()
-
-    if not sections:
-        return [("sec_0", "正文", text.strip())]
-    return sections
+def load_sections(
+    path: str, asset_dir: str | None = None, *, confirm: bool = False
+):
+    """兼容旧调用的共享摄入包装，返回全文与统一章节切分结果。"""
+    ingested = ingest_document(path, asset_dir=asset_dir, confirm=confirm)
+    return ingested.text, ingested.sections
 
 
 def apply_import_mutation(
-    text: str, triples: list[tuple[str, str, str]], source_path: str | None = None
+    text: str,
+    triples: list[tuple[str, str, str]],
+    source_path: str | None = None,
+    quality_profile: dict | None = None,
 ):
     """构造把导入结果写入工作区的更新意图（设初稿/大纲/章节草稿，置草稿修订模式）。
 
@@ -146,11 +85,13 @@ def apply_import_mutation(
         if source_path:
             ws.profile["source_document_path"] = os.path.abspath(source_path)
             ws.profile["source_document_ext"] = os.path.splitext(source_path)[1].lower()
+        if quality_profile is not None:
+            ws.profile["ingestion_quality"] = quality_profile
 
     return _mutate
 
 
-def _handle_import(ctx: ToolContext, path: str) -> str:
+def _handle_import(ctx: ToolContext, path: str, confirm: bool = False) -> str:
     if not path or not path.strip():
         return "请提供论文文件路径。"
     path = path.strip().strip('"').strip("'")
@@ -158,14 +99,30 @@ def _handle_import(ctx: ToolContext, path: str) -> str:
     asset_dir = os.path.join(ctx.output_dir, f"{stem}_assets")
 
     try:
-        text, triples = load_sections(path, asset_dir=asset_dir)
+        ingested = ingest_document(path, asset_dir=asset_dir, confirm=confirm)
+        text, triples = ingested.text, ingested.sections
+    except IngestionConfirmationRequired as exc:
+        warnings = "；".join(exc.report.warnings)
+        return (
+            "confirmation_required：文档正文可读，但摄入质量需要用户确认。"
+            f"原因：{warnings}。若用户明确同意，请再次调用 import_draft，"
+            "并设置 confirm=true。"
+        )
     except DocumentLoadError as exc:
         return f"读取失败：{exc}"
     except Exception as exc:  # noqa: BLE001 - 解析异常按工具失败回灌，不中止会话
         return f"读取失败：{type(exc).__name__}: {exc}"
 
     # 导入为用户自有素材，经仓储原子写入（不走反幻觉内容护栏）。
-    ctx.repo.update(ctx.workspace, apply_import_mutation(text, triples, source_path=path))
+    ctx.repo.update(
+        ctx.workspace,
+        apply_import_mutation(
+            text,
+            triples,
+            source_path=path,
+            quality_profile=ingested.quality.to_profile(),
+        ),
+    )
     ctx.session.record("import_draft", path=path, sections=len(triples))
 
     titles = "、".join(f"{sid}《{title}》" for sid, title, _c in triples)
@@ -180,9 +137,14 @@ def register_import_draft(registry: ToolRegistry, ctx: ToolContext) -> None:
     registry.register(
         name="import_draft",
         description=_IMPORT_DESCRIPTION,
-        handler=lambda path: _handle_import(ctx, path),
+        handler=lambda path, confirm=False: _handle_import(ctx, path, confirm),
         parameters=_IMPORT_SCHEMA,
     )
 
 
-__all__ = ["register_import_draft", "load_sections", "apply_import_mutation"]
+__all__ = [
+    "register_import_draft",
+    "load_sections",
+    "apply_import_mutation",
+    "split_academic_sections",
+]

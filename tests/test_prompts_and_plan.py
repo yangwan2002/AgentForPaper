@@ -59,3 +59,33 @@ def test_plan_agent_falls_back_when_llm_not_json():
 
     titles = [n.title for n in ws.ordered_sections()]
     assert "引言" in titles and "相关工作" in titles  # 默认骨架
+
+
+def test_plan_agent_draft_uses_academic_heading_fallback_without_llm():
+    """PDF 式无 Markdown 层级文本仍按学术标题切分，且不调用 LLM。"""
+
+    class _NoCallLLM:
+        def complete(self, messages, **kwargs):
+            raise AssertionError("草稿切分前不应调用 LLM")
+
+    agent = PlanAgent(_NoCallLLM())
+    ws = PaperWorkspace(
+        workspace_id="w",
+        input_mode=InputMode.DRAFT_REVISION,
+        original_draft=(
+            "1 Introduction\nintro body\n"
+            "2 Methods\nmethod body\n"
+            "3 Results\nresults body\n"
+        ),
+    )
+
+    result = agent.run(AgentContext(workspace=ws))
+    for mutation in result.mutations:
+        mutation(ws)
+
+    assert [node.title for node in ws.ordered_sections()] == [
+        "1 Introduction",
+        "2 Methods",
+        "3 Results",
+    ]
+    assert "method body" in ws.draft_sections["sec_1"]

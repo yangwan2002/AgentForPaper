@@ -27,6 +27,11 @@ import socket
 import time
 from typing import Iterator
 
+from paper_agent.observability.budget import (
+    BudgetExceededError,
+    clamp_timeout,
+    current_run_budget,
+)
 from paper_agent.observability.events import Event, EventKind, EventSink
 from paper_agent.providers.llm.base import (
     CancellationToken,
@@ -288,8 +293,13 @@ class ResilientLLMProvider(LLMProvider):
 
         last_exc: Exception | None = None
         for attempt in range(self._policy.max_retries + 1):
+            # Recompute before every attempt: a timeout captured for the first
+            # request must never let a retry cross the shared run deadline.
+            clamp_timeout(opts)
             try:
                 return self._inner.complete(messages, **opts)
+            except BudgetExceededError:
+                raise
             except LLMError:
                 # 内层已是终态错误（如具体 provider 自身耗尽兜底重试后抛出），
                 # 直接上抛，不在本层重复重试。
@@ -306,7 +316,7 @@ class ResilientLLMProvider(LLMProvider):
                     break
                 delay = backoff_delay(self._policy, attempt, exc)
                 self._emit_retry(attempt + 1, delay, exc)
-                time.sleep(delay)
+                self._deadline_aware_sleep(delay)
 
         raise LLMError(
             f"LLM 调用失败（重试 {self._policy.max_retries} 次）：{last_exc}"
@@ -340,6 +350,7 @@ class ResilientLLMProvider(LLMProvider):
         last_exc: Exception | None = None
 
         for attempt in range(self._policy.max_retries + 1):
+            clamp_timeout(opts)
             try:
                 for chunk in self._inner.stream(
                     messages, cancel_token=cancel_token, **opts
@@ -348,6 +359,8 @@ class ResilientLLMProvider(LLMProvider):
                     yield chunk
                 # 内层迭代器自然耗尽：正常完成或因取消而干净停止，均为正常终态。
                 return
+            except BudgetExceededError:
+                raise
             except LLMError:
                 # 内层已是终态错误（如具体 provider 自身耗尽兜底重试后抛出），
                 # 直接上抛、不在本层重试，与 complete() 行为保持一致。
@@ -365,7 +378,7 @@ class ResilientLLMProvider(LLMProvider):
                     break
                 delay = backoff_delay(self._policy, attempt, exc)
                 self._emit_retry(attempt + 1, delay, exc)
-                time.sleep(delay)
+                self._deadline_aware_sleep(delay)
 
         # 不可重试，或耗尽全部重试仍失败（且尚未产出增量）：抛出并保留底层原因。
         raise LLMError(
@@ -373,6 +386,21 @@ class ResilientLLMProvider(LLMProvider):
         ) from last_exc
 
     # --- 内部：事件发射 ---
+
+    @staticmethod
+    def _deadline_aware_sleep(delay: float) -> None:
+        """Sleep for backoff without starting another attempt past deadline."""
+        context = current_run_budget()
+        if context is None or context.duration_cap_s <= 0:
+            time.sleep(delay)
+            return
+        remaining = context.remaining_s
+        if remaining <= 0:
+            raise context.expire_deadline()
+        time.sleep(min(delay, remaining))
+        context.check()
+        if delay >= remaining:
+            raise context.expire_deadline()
 
     def _emit_retry(self, attempt: int, delay: float, exc: Exception) -> None:
         """发出 `LLM_RETRY` 事件（Req 4.8 / 10.6）。

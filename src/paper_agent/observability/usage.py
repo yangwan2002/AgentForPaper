@@ -18,6 +18,17 @@ def estimate_tokens(text: str) -> int:
 
 
 @dataclass
+class RoleUsage:
+    calls: int = 0
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+
+    @property
+    def total_tokens(self) -> int:
+        return self.prompt_tokens + self.completion_tokens
+
+
+@dataclass
 class UsageTracker:
     calls: int = 0
     prompt_tokens: int = 0
@@ -25,6 +36,8 @@ class UsageTracker:
     estimated: bool = False  # 是否含估算值
     # 统一的 token 计量器；缺少 API 真实计数时用它估算，口径与全局一致。
     counter: TokenCounter = field(default_factory=build_token_counter)
+    # writer/reviewer/visual 等角色分账；总账字段继续保留以向后兼容。
+    by_role: dict[str, RoleUsage] = field(default_factory=dict)
 
     @property
     def total_tokens(self) -> int:
@@ -36,6 +49,8 @@ class UsageTracker:
         completion_text: str,
         prompt_tokens: int | None = None,
         completion_tokens: int | None = None,
+        *,
+        role: str = "unspecified",
     ) -> tuple[int, int]:
         """记录一次调用，返回本次 (prompt, completion) token。
 
@@ -51,7 +66,22 @@ class UsageTracker:
         self.calls += 1
         self.prompt_tokens += prompt_tokens
         self.completion_tokens += completion_tokens
+        bucket = self.by_role.setdefault(role or "unspecified", RoleUsage())
+        bucket.calls += 1
+        bucket.prompt_tokens += prompt_tokens
+        bucket.completion_tokens += completion_tokens
         return prompt_tokens, completion_tokens
+
+    def role_usage(self, role: str) -> RoleUsage:
+        """返回指定角色的只读式快照；不存在时返回零值。"""
+        bucket = self.by_role.get(role)
+        if bucket is None:
+            return RoleUsage()
+        return RoleUsage(
+            calls=bucket.calls,
+            prompt_tokens=bucket.prompt_tokens,
+            completion_tokens=bucket.completion_tokens,
+        )
 
     def summary(self) -> str:
         mark = "（含估算）" if self.estimated else ""

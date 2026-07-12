@@ -15,6 +15,15 @@ def test_real_citations_still_extracted():
     assert extract_text_citations(text) == ["1", "12", "Smith2020", "arxiv:1706.03762"]
 
 
+def test_multiple_source_ids_in_one_bracket_are_extracted():
+    text = "相关工作 [openalex:W123, openalex:W456; arxiv:1706.03762]。"
+    assert extract_text_citations(text) == [
+        "openalex:W123",
+        "openalex:W456",
+        "arxiv:1706.03762",
+    ]
+
+
 def test_mixed_markers_and_citations():
     # [J] 是著录标记应剔除；[3] 是真实引用应保留。
     text = "方法参考 [3]，其出处为期刊[J]。"
@@ -30,6 +39,26 @@ def test_lowercase_or_mixed_not_excluded():
     # 含小写/数字的 key 不是著录标记，应保留。
     text = "见 [RoMa] 与 [a1]。"
     assert extract_text_citations(text) == ["RoMa", "a1"]
+
+
+def test_latex_position_options_not_treated_as_citations():
+    text = r"\begin{subfigure}[t]{0.32\textwidth}\parbox[c]{text}\begin{figure}[!htbp]"
+    assert extract_text_citations(text) == []
+
+
+def test_algorithmic_line_number_option_is_not_a_citation():
+    text = r"\begin{algorithmic}[1]\STATE initialize"
+    assert extract_text_citations(text) == []
+
+
+def test_generic_latex_options_are_not_citations():
+    text = (
+        r"\documentclass[journal]{IEEEtran}"
+        r"\begin{minipage}[c]{.5\textwidth}"
+        r"\includegraphics[width=\linewidth]{x.pdf}"
+        r"\parbox[c][0.24\textheight][c]{text}"
+    )
+    assert extract_text_citations(text) == []
 
 
 def test_latex_ref_labels_not_treated_as_citations():

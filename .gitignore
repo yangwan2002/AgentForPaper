@@ -10,6 +10,8 @@ output/
 
 # 追踪落盘（agent-observability-tracing）
 traces/
+eval/results/
+eval_private/
 
 # hypothesis 属性测试示例数据库（本地缓存，不入库）
 .hypothesis/

@@ -17,7 +17,7 @@ from paper_agent.orchestrator import Orchestrator, PaperRequest
 from paper_agent.prompts import templates
 from paper_agent.providers.llm.mock import MockLLMProvider
 from paper_agent.providers.retrieval.mock import MockRetrievalProvider
-from paper_agent.tools.quality_gate import QualityGate
+from paper_agent.tools.quality_gate import QualityGate, build_allowed_values
 from paper_agent.workspace.models import (
     InputMode,
     OutlineNode,
@@ -86,6 +86,7 @@ def test_research_artifact_all_numeric_values():
         experiments=[
             Experiment(
                 experiment_id="main",
+                hyperparameters={"ransac_px": 2.5},
                 results_data={
                     "columns": ["mAP", "Recall"],
                     "rows": [
@@ -102,6 +103,26 @@ def test_research_artifact_all_numeric_values():
     assert 83.4 in values
     assert 86.1 in values
     assert 93.2 in values
+    assert 2.5 in values
+
+
+def test_allowed_values_include_percent_and_same_metric_delta():
+    artifact = ResearchArtifact(
+        research_question="test",
+        method=MethodSpec(overview="test"),
+        experiments=[
+            Experiment(
+                experiment_id="ablation",
+                results_data={
+                    "rows": [{"mIoU": 0.884}, {"mIoU": 0.818}],
+                    "stats": {},
+                },
+            )
+        ],
+    )
+    allowed = build_allowed_values(artifact)
+    assert any(abs(value - 88.4) < 1e-9 for value in allowed)
+    assert any(abs(value - 0.066) < 1e-9 for value in allowed)
 
 
 def test_research_artifact_is_empty():
@@ -335,6 +356,24 @@ def test_quality_gate_grounding_passes():
     assert not fabricated
 
 
+def test_quality_gate_ignores_structural_decimal_numbers():
+    """章节、图表和公式编号不应被当作实验指标。"""
+    ws = _ws_with_artifact_and_draft(
+        "# 第1章 方法\n\n## 1.2 网络结构\n见第1.3节、图 3.4 与式 2.5。"
+        + "真实结果为 83.4 mAP。" * 5
+    )
+    report = QualityGate().check(ws)
+    fabricated = [i for i in report.issues if i["type"] == "fabricated_metric"]
+    assert not fabricated
+
+
+def test_numeric_extraction_does_not_split_decimal_tail():
+    values = QualityGate._extract_numeric_values(
+        "mIoU为0.884，ATE为0.407 [openalex:W3047057232]。"
+    )
+    assert values == [0.407, 0.884]
+
+
 def test_quality_gate_grounding_flags_fabricated():
     """正文数字在 artifact 中找不到 → 报 fabricated_metric (high)。"""
     ws = _ws_with_artifact_and_draft(
@@ -389,6 +428,15 @@ def test_writing_agent_injects_artifact_context():
             key_components=["OETR", "Cross-view consistency loss"],
         ),
         contributions=[Contribution(summary="提升 8.3% mAP")],
+        experiments=[
+            Experiment(
+                experiment_id="main",
+                results_data={
+                    "rows": [{"method": "ours", "mAP": 83.4}],
+                    "stats": {},
+                },
+            )
+        ],
     )
     llm = MockLLMProvider()
     agent = WritingAgent(llm, ContextManager(MockLLMProvider()))
@@ -396,6 +444,7 @@ def test_writing_agent_injects_artifact_context():
     assert "用户真实研究内容" in context
     assert "大视角差空地匹配" in context
     assert "OETR + cross-view consistency loss" in context
+    assert '"mAP": 83.4' in context
 
 
 def test_writing_agent_no_artifact_no_block():

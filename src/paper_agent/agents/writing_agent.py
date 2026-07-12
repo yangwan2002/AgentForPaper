@@ -13,6 +13,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 
 from paper_agent.agents.base import Agent, AgentContext, AgentResult
@@ -29,6 +30,10 @@ from paper_agent.prompts import templates
 from paper_agent.providers.llm.base import LLMProvider
 from paper_agent.providers.retrieval.base import RetrievalProvider
 from paper_agent.tools.citation import CitationVerifier
+from paper_agent.tools.artifact_commit_gate import (
+    ArtifactCommitGate,
+    build_claim_manifest,
+)
 from paper_agent.tools.literature_tool import (
     _SEARCH_SCHEMA,
     LiteratureSearchTool,
@@ -148,6 +153,7 @@ class WritingAgent(Agent):
 
     def run(self, ctx: AgentContext) -> AgentResult:
         ws = ctx.workspace
+        self._gate_violations: list[dict] = []
         # 写作期 ask_user 工具：仅交互式 Elicitor 才启用（否则 None → 不注册）。
         # 每轮运行构造一个，种子取自已持久化的问答（续跑回放、不重复问）。
         self._ask_tool = self._make_ask_tool(ws)
@@ -163,6 +169,13 @@ class WritingAgent(Agent):
         # 把写作期新收集到的用户问答经单一写入路径持久化到 ws.profile。
         if self._ask_tool is not None and self._ask_tool.collected:
             result.mutations.append(self._ask_tool.persist_mutation())
+        if self._gate_violations:
+            rejected = list(self._gate_violations)
+
+            def persist_rejections(w: PaperWorkspace) -> None:
+                w.artifact_violations.extend(rejected)
+
+            result.mutations.append(persist_rejections)
         return result
 
     def _make_ask_tool(self, ws: PaperWorkspace) -> AskUserTool | None:
@@ -207,21 +220,45 @@ class WritingAgent(Agent):
 
         preexisting = set(ws.verified_reference_ids())
         for node in nodes:
-            content = self._write_new(ws, node, registry, lit_tool, logs)
+            preserved_revision_base = (
+                ws.input_mode is InputMode.DRAFT_REVISION
+                and bool(ws.draft_sections.get(node.section_id, "").strip())
+            )
+            artifact_baseline = (
+                ws.input_mode is InputMode.GENERATION
+                and ws.artifact is not None
+                and not ws.artifact.is_empty()
+            )
+            if preserved_revision_base:
+                # Accuracy-first revision starts from the byte-preserved source.
+                # Review feedback may request localized edits in later rounds, but
+                # the initial pass must never paraphrase away user facts.
+                content = ws.draft_sections[node.section_id]
+                logs.append(f"保留初稿章节基线：{node.title}")
+            elif artifact_baseline:
+                # Start from a fact-complete deterministic rendering.  Subsequent
+                # guarded review/revision rounds may improve prose, but the first
+                # committed draft cannot omit or invent artifact facts.
+                content = self._safe_artifact_content(ws, node)
+                logs.append(f"生成 Artifact 确定性基线：{node.title}")
+            else:
+                content = self._write_new(ws, node, registry, lit_tool, logs)
             # 可引用集合 = 已验证库 + 写作中新检索到的（工具模式）。
             available = sorted(
                 preexisting | (set(lit_tool.found) if lit_tool else set())
             )
             # 只记录正文实际引用到的文献，避免每章无差别堆砌全部文献。
             cited = self._extract_cited(content, available)
-            drafts[node.section_id] = SectionDraft(
-                section_id=node.section_id,
-                title=node.title,
-                content=content,
-                cited_reference_ids=cited,
+            candidate = self._artifact_checked_draft(
+                ws, node, node.title, content, cited, logs
             )
-            summaries[node.section_id] = self._ctx.summarize_section(
-                node.title, content
+            if candidate is None:
+                continue
+            drafts[node.section_id] = candidate
+            summaries[node.section_id] = (
+                content.strip()[:300]
+                if preserved_revision_base or artifact_baseline
+                else self._ctx.summarize_section(node.title, content)
             )
             logs.append(f"撰写章节：{node.title}")
 
@@ -263,6 +300,123 @@ class WritingAgent(Agent):
         if found_refs:
             logs.append(f"写作期新检索并核验入库文献 {len(found_refs)} 条")
         return AgentResult(mutations=[mutate], logs=logs)
+
+    def _artifact_checked_draft(
+        self,
+        ws: PaperWorkspace,
+        node: OutlineNode,
+        title: str,
+        content: str,
+        cited: list[str],
+        logs: list[str],
+    ) -> SectionDraft | None:
+        """Construct and validate a candidate before any workspace mutation."""
+        contract = ws.artifact.contract() if ws.artifact is not None else None
+        evidence_ids = list(
+            node.allowed_evidence_ids or node.required_evidence_ids
+        )
+        candidate = SectionDraft(
+            section_id=node.section_id,
+            title=title,
+            content=content,
+            cited_reference_ids=cited,
+            artifact_hash=contract.artifact_hash if contract else "",
+            evidence_ids=evidence_ids,
+            claim_manifest=build_claim_manifest(content, evidence_ids),
+        )
+        verdict = ArtifactCommitGate().check(ws, node, candidate)
+        if verdict.passed:
+            return candidate
+        self._gate_violations.extend(verdict.high_violations)
+        logs.append(
+            f"ArtifactCommitGate 拒绝章节《{title}》："
+            + "；".join(item["message"] for item in verdict.high_violations[:3])
+        )
+        # Generation can safely degrade to a deterministic rendering of the
+        # artifact.  This keeps unknown model facts out while still producing a
+        # complete, auditable section.  Revision never takes this path: preserving
+        # the user's source is preferable to silently replacing it.
+        if (
+            ws.input_mode is InputMode.GENERATION
+            and ws.artifact is not None
+            and not ws.artifact.is_empty()
+        ):
+            safe_content = self._safe_artifact_content(ws, node)
+            safe_candidate = SectionDraft(
+                section_id=node.section_id,
+                title=title,
+                content=safe_content,
+                cited_reference_ids=[],
+                artifact_hash=contract.artifact_hash if contract else "",
+                evidence_ids=evidence_ids,
+                claim_manifest=build_claim_manifest(
+                    safe_content, evidence_ids
+                ),
+            )
+            safe_verdict = ArtifactCommitGate().check(
+                ws, node, safe_candidate
+            )
+            if safe_verdict.passed:
+                logs.append(f"章节《{title}》已回退为 Artifact 确定性内容")
+                return safe_candidate
+            self._gate_violations.extend(safe_verdict.high_violations)
+        return None
+
+    @staticmethod
+    def _safe_artifact_content(
+        ws: PaperWorkspace, node: OutlineNode
+    ) -> str:
+        """Render only user-provided facts; used after a model candidate is rejected."""
+        artifact = ws.artifact
+        assert artifact is not None
+        key = f"{node.section_id} {node.title}".lower()
+        lines: list[str] = []
+        if any(token in key for token in ("intro", "引言", "绪论")):
+            lines.append(artifact.research_question)
+            lines.extend(item.summary for item in artifact.contributions)
+        elif any(token in key for token in ("experiment", "result", "实验", "结果")):
+            for exp in artifact.experiments:
+                lines.append(f"### {exp.experiment_id}")
+                lines.append(f"数据集：{exp.dataset}")
+                lines.append(f"基线：{', '.join(exp.baselines)}")
+                lines.append(f"评价指标：{', '.join(exp.metrics)}")
+                if exp.hyperparameters:
+                    lines.append(
+                        "实验设置与超参数："
+                        + json.dumps(
+                            exp.hyperparameters,
+                            ensure_ascii=False,
+                            sort_keys=True,
+                        )
+                    )
+                for row in (exp.results_data or {}).get("rows") or []:
+                    lines.append(
+                        json.dumps(row, ensure_ascii=False, sort_keys=True)
+                    )
+        elif any(token in key for token in ("conclusion", "结论", "总结")):
+            lines.extend(item.summary for item in artifact.contributions)
+            lines.extend(artifact.novelty_claims)
+        else:
+            lines.append(artifact.method.overview)
+            lines.extend(artifact.method.key_components)
+            if artifact.method.formal_definition:
+                lines.append(artifact.method.formal_definition)
+            if artifact.method.pseudocode:
+                lines.append(artifact.method.pseudocode)
+            datasets = [exp.dataset for exp in artifact.experiments if exp.dataset]
+            if datasets:
+                lines.append("数据集与预处理范围：" + "；".join(datasets))
+            settings = {
+                exp.experiment_id: exp.hyperparameters
+                for exp in artifact.experiments
+                if exp.hyperparameters
+            }
+            if settings:
+                lines.append(
+                    "实验设置与超参数："
+                    + json.dumps(settings, ensure_ascii=False, sort_keys=True)
+                )
+        return "\n\n".join(line for line in lines if line.strip())
 
     def _process_figures(self, ws: PaperWorkspace) -> dict[str, str]:
         """为缺少说明的图表生成说明；用户已提供说明的保持不变（Req 6.1/6.2）。"""
@@ -338,6 +492,14 @@ class WritingAgent(Agent):
         from paper_agent.prompts.section_types import infer_and_get_spec  # noqa
 
         run_context = self._run_context(ws)
+        if node.allowed_evidence_ids or node.required_evidence_ids:
+            scoped = node.allowed_evidence_ids or node.required_evidence_ids
+            run_context += (
+                "\n\n[本节事实证据范围]\n"
+                + "\n".join(f"- {evidence_id}" for evidence_id in scoped)
+                + "\n不得使用范围外的 Artifact 事实；信息不足时省略该细节，"
+                "不得输出“待补充”、TODO 或其他占位符。"
+            )
         summaries = self._ctx.summaries_block(ws, node.section_id)
         is_revision = (
             ws.input_mode is InputMode.DRAFT_REVISION and bool(ws.original_draft)
@@ -458,6 +620,21 @@ class WritingAgent(Agent):
                 if exp.hyperparameters:
                     hp = ", ".join(f"{k}={v}" for k, v in exp.hyperparameters.items())
                     sections.append(f"    超参：{hp}")
+                rows = (exp.results_data or {}).get("rows") or []
+                if rows:
+                    visible_rows = rows[:50]
+                    sections.append(
+                        "    真实结果行：\n"
+                        + "\n".join(
+                            "      " + json.dumps(row, ensure_ascii=False, sort_keys=True)
+                            for row in visible_rows
+                        )
+                    )
+                    if len(rows) > len(visible_rows):
+                        sections.append(
+                            f"    （共 {len(rows)} 行；为控制上下文仅展示前 "
+                            f"{len(visible_rows)} 行，完整数据仍用于数值闸门。）"
+                        )
                 stats = (exp.results_data or {}).get("stats") or {}
                 if stats:
                     for metric, s in stats.items():
@@ -991,12 +1168,22 @@ class WritingAgent(Agent):
             # 修订后从新正文重新提取引用，避免记录字段与正文不同步
             # （Property 1：正文 [id] 必须来自已验证库，由质量闸正文扫描兜底）。
             cited = self._extract_cited(content, sorted(ws.verified_reference_ids()))
-            updated[sid] = SectionDraft(
-                section_id=existing.section_id,
-                title=existing.title,
-                content=content,
-                cited_reference_ids=cited,
+            node = next(
+                (item for item in ws.outline if item.section_id == sid),
+                OutlineNode(
+                    section_id=sid,
+                    title=existing.title,
+                    order=0,
+                    required_evidence_ids=list(existing.evidence_ids),
+                    allowed_evidence_ids=list(existing.evidence_ids),
+                ),
             )
+            candidate = self._artifact_checked_draft(
+                ws, node, existing.title, content, cited, logs
+            )
+            if candidate is None:
+                continue
+            updated[sid] = candidate
             updated_summaries[sid] = self._ctx.summarize_section(
                 existing.title, content
             )
@@ -1102,12 +1289,22 @@ class WritingAgent(Agent):
             new_content = normalized.content
             # 修订后从新正文重新提取引用，避免记录字段与正文不同步（Property 1）。
             cited = self._extract_cited(new_content, sorted(ws.verified_reference_ids()))
-            updated[sid] = SectionDraft(
-                section_id=existing.section_id,
-                title=existing.title,
-                content=new_content,
-                cited_reference_ids=cited,
+            node = next(
+                (item for item in ws.outline if item.section_id == sid),
+                OutlineNode(
+                    section_id=sid,
+                    title=existing.title,
+                    order=0,
+                    required_evidence_ids=list(existing.evidence_ids),
+                    allowed_evidence_ids=list(existing.evidence_ids),
+                ),
             )
+            candidate = self._artifact_checked_draft(
+                ws, node, existing.title, new_content, cited, logs
+            )
+            if candidate is None:
+                continue
+            updated[sid] = candidate
             updated_summaries[sid] = self._ctx.summarize_section(
                 existing.title, new_content
             )

@@ -25,7 +25,7 @@ import re
 from dataclasses import dataclass, field
 
 from paper_agent.prompts.section_types import infer_section_type, get_spec
-from paper_agent.workspace.models import PaperWorkspace
+from paper_agent.workspace.models import InputMode, PaperWorkspace
 
 _PLACEHOLDER = re.compile(
     r"(TODO|FIXME|待补充|待完善|此处填写|\[填写\]|XXX|\?\?\?|tbd)", re.IGNORECASE
@@ -34,6 +34,15 @@ _PLACEHOLDER = re.compile(
 # 正文里形如 [id] 的引用标注；id 限 ASCII 标识符字符（含冒号/点/连字符），
 # 避免误捕获 [表格 第1页 #1] 这类含空格/CJK 的非引用方括号。
 _TEXT_CITATION = re.compile(r"\[([A-Za-z0-9_.:\-]+)\]")
+_MULTI_SOURCE_CITATION = re.compile(
+    r"\[((?:\s*(?:openalex|arxiv|doi|semantic_scholar):"
+    r"[A-Za-z0-9_.:/\-]+\s*[,;]?)+)\]",
+    re.IGNORECASE,
+)
+_SOURCE_CITATION_TOKEN = re.compile(
+    r"(?:openalex|arxiv|doi|semantic_scholar):[A-Za-z0-9_.:/\-]+",
+    re.IGNORECASE,
+)
 
 
 # LaTeX 交叉引用标签前缀：``\ref{eq:..}`` / ``\label{tab:..}`` 等经文本抽取后会残留成
@@ -89,9 +98,41 @@ def extract_text_citations(content: str) -> list[str]:
     与 LaTeX 交叉引用标签（``[eq:..]`` / ``[tab:..]`` / ``[fig:..]`` 等）——它们不是引用
     编号，否则会被护栏/收尾验收误判为"未核验的悬空引用"。
     """
+    content = re.sub(
+        r"(\\(?:begin\{[^}]+\}|parbox|includegraphics))\[!?[htbpHc]+\]",
+        r"\1",
+        content or "",
+    )
+    # algorithmic 的可选参数 ``[1]`` 表示逐行编号，并非数字文献引用。
+    content = re.sub(
+        r"(\\begin\{algorithmic\})\[\d+\]",
+        r"\1",
+        content,
+        flags=re.IGNORECASE,
+    )
+    # 其余 LaTeX 命令/环境的可选参数（documentclass[journal]、
+    # minipage[c]、parbox[c]、includegraphics[width=...]）也不是文献引用。
+    latex_option = re.compile(
+        r"(\\(?:[A-Za-z@]+\*?|begin\{[^}]+\}|end\{[^}]+\}))"
+        r"\[[^\]\n]{1,160}\]"
+    )
+    # Some commands have several consecutive optional arguments
+    # (``\parbox[c][height][c]``); rescan the replacement position.
+    for _ in range(8):
+        cleaned = latex_option.sub(r"\1", content)
+        if cleaned == content:
+            break
+        content = cleaned
     seen: list[str] = []
-    for m in _TEXT_CITATION.finditer(content or ""):
-        cid = m.group(1)
+    candidates: list[tuple[int, str]] = []
+    for group in _MULTI_SOURCE_CITATION.finditer(content):
+        for token_match in _SOURCE_CITATION_TOKEN.finditer(group.group(1)):
+            candidates.append(
+                (group.start(1) + token_match.start(), token_match.group(0))
+            )
+    for m in _TEXT_CITATION.finditer(content):
+        candidates.append((m.start(), m.group(1)))
+    for _, cid in sorted(candidates, key=lambda item: item[0]):
         if _is_non_citation_marker(cid):
             continue
         if cid not in seen:
@@ -107,25 +148,7 @@ def build_allowed_values(artifact) -> list[float]:
     以 all_numeric_values() 为基础 set，遍历各实验的 stats，累加 mean/mean±std
     与 min/max，最后 ``sorted`` 返回。
     """
-    # 扩展 allowed：加入 mean ± std 范围（实验结果的常见表述）
-    extended_allowed: set[float] = set(artifact.all_numeric_values())
-    for exp in artifact.experiments:
-        stats = (exp.results_data or {}).get("stats") or {}
-        for metric, s in stats.items():
-            if not isinstance(s, dict):
-                continue
-            mean = s.get("mean")
-            std = s.get("std")
-            if mean is not None and std is not None:
-                # 加入 mean, mean±std, min, max
-                extended_allowed.add(float(mean))
-                extended_allowed.add(float(mean) - float(std))
-                extended_allowed.add(float(mean) + float(std))
-            for key in ("min", "max"):
-                v = s.get(key)
-                if v is not None:
-                    extended_allowed.add(float(v))
-    return sorted(extended_allowed)
+    return list(artifact.contract().allowed_numeric_values)
 
 
 def value_matches(extracted: float, allowed: list[float], tolerance: float = 0.01) -> bool:
@@ -206,13 +229,31 @@ class QualityGate:
                         "message": f"章节《{node.title}》引用了未经核验的文献 id：{rid}。",
                     })
             # 正文实际出现的 [id] 标注：捕捉记录字段未同步的伪造引用（修订路径修复）。
+            source_citations = (
+                set(
+                    extract_text_citations(
+                        ws.draft_sections.get(node.section_id, "")
+                    )
+                )
+                if ws.input_mode is InputMode.DRAFT_REVISION
+                else set()
+            )
             for rid in extract_text_citations(content):
                 if rid not in verified_ids:
+                    source_issue = rid in source_citations
                     issues.append({
-                        "type": "text_citation_invalid",
+                        "type": (
+                            "source_citation_unverified"
+                            if source_issue
+                            else "text_citation_invalid"
+                        ),
                         "severity": "high",
                         "section_id": node.section_id,
-                        "message": f"章节《{node.title}》正文标注了未经核验的文献 id：{rid}。",
+                        "message": (
+                            f"章节《{node.title}》原始初稿含未经核验的文献 id：{rid}。"
+                            if source_issue
+                            else f"章节《{node.title}》正文新增了未经核验的文献 id：{rid}。"
+                        ),
                     })
             if draft.cited_reference_ids or extract_text_citations(content):
                 any_citation = True
@@ -222,6 +263,8 @@ class QualityGate:
 
         # Round 7：artifact grounding 检查——正文数字必须能在 artifact 实验数据中找到。
         self._check_artifact_grounding(ws, issues)
+        self._check_artifact_contract(ws, issues)
+        self._check_must_cite_refs(ws, issues)
 
         if verified_ids and not any_citation:
             issues.append({
@@ -231,6 +274,81 @@ class QualityGate:
             })
 
         return QualityReport(issues=issues)
+
+    @staticmethod
+    def _check_artifact_contract(ws: PaperWorkspace, issues: list[dict]) -> None:
+        """Re-validate evidence-bound drafts against the latest artifact hash."""
+        if ws.artifact is None or ws.artifact.is_empty():
+            return
+        from paper_agent.tools.artifact_commit_gate import ArtifactCommitGate
+
+        gate = ArtifactCommitGate()
+        valid_supports = {
+            exp.experiment_id for exp in ws.artifact.experiments
+        } | {node.section_id for node in ws.outline}
+        for index, contribution in enumerate(ws.artifact.contributions):
+            unknown = set(contribution.evidence_refs) - valid_supports
+            if unknown:
+                issues.append({
+                    "type": "invalid_contribution_evidence",
+                    "severity": "high",
+                    "message": (
+                        f"贡献 {index + 1} 引用了不存在的 Artifact 证据：{sorted(unknown)}"
+                    ),
+                })
+
+        for node in ws.ordered_sections():
+            draft = ws.section_drafts.get(node.section_id)
+            if draft is None:
+                continue
+            # Old workspaces without evidence-bound outlines remain readable; a new
+            # artifact-aware planning/writing pass upgrades them to the strict path.
+            strict = bool(
+                node.required_evidence_ids
+                or node.allowed_evidence_ids
+                or draft.artifact_hash
+                or draft.evidence_ids
+            )
+            if not strict:
+                continue
+            verdict = gate.check(ws, node, draft)
+            for issue in verdict.violations:
+                if issue.get("type") == "fabricated_metric":
+                    continue  # already reported by _check_artifact_grounding
+                issues.append(issue)
+
+    @staticmethod
+    def _check_must_cite_refs(ws: PaperWorkspace, issues: list[dict]) -> None:
+        artifact = ws.artifact
+        if artifact is None or not artifact.must_cite_refs:
+            return
+        cited = {
+            citation
+            for draft in ws.section_drafts.values()
+            for citation in (
+                list(draft.cited_reference_ids)
+                + extract_text_citations(draft.content)
+            )
+        }
+        id_aliases: dict[str, set[str]] = {
+            reference.id: {
+                reference.id,
+                reference.source_id,
+                *reference.citation_aliases,
+            }
+            for reference in ws.verified_references
+        }
+        for required in artifact.must_cite_refs:
+            aliases = id_aliases.get(required, {required})
+            for reference in ws.verified_references:
+                if reference.source_id == required:
+                    aliases |= {reference.id, reference.source_id}
+            if cited.isdisjoint(aliases):
+                issues.append({
+                    "type": "missing_must_cite_reference",
+                    "severity": "high",
+                    "message": f"Artifact 指定的必引文献尚未在正文引用：{required}",
+                })
 
     @staticmethod
     def _check_required_elements(node, content: str, issues: list[dict]) -> None:
@@ -264,7 +382,7 @@ class QualityGate:
 
     @staticmethod
     def _extract_numeric_values(text: str) -> list[float]:
-        """抽取正文中所有数值（含小数、百分比），忽略序号/年份/超参等低信息量数字。
+        r"""抽取正文中所有数值（含小数、百分比），忽略序号/年份/超参等低信息量数字。
 
         匹配模式：
         - ``\b\d+\.\d+\b``：小数（如 83.4、0.001）
@@ -273,21 +391,42 @@ class QualityGate:
 
         返回去重排序的 float 列表。
         """
+        # Markdown 标题中的 1.2、3.4.1 等是章节编号，不是实验数据。先移除标题行，
+        # 避免把结构编号误判为 fabricated_metric。
+        text = re.sub(r"(?m)^\s{0,3}#{1,6}\s+.*$", "", text)
+        # 引用 id（如 [openalex:W3047057232]）中的数字是标识符，不是研究指标。
+        text = _MULTI_SOURCE_CITATION.sub("", text)
+        text = _TEXT_CITATION.sub("", text)
+        text = re.sub(r"https?://\S+", "", text)
+        # 同样排除正文里的显式章节/图表/公式交叉引用编号。
+        text = re.sub(
+            r"(?:第\s*)?\d+(?:\.\d+)+(?:\s*[章节])|"
+            r"(?:图|表|式|公式)\s*[\d.-]+",
+            "",
+            text,
+        )
+        # 排除 LaTeX 排版参数（图宽、浮动位置、表格间距等），它们不是研究结果。
+        text = re.sub(
+            r"(?m)^.*\\(?:includegraphics|parbox|begin|setlength|renewcommand|"
+            r"vspace|hspace|multirow|raisebox).*$",
+            "",
+            text,
+        )
         values: set[float] = set()
         # 小数
-        for m in re.finditer(r"\b(\d+\.\d+)\b", text):
+        for m in re.finditer(r"(?<![\d.])(\d+\.\d+)(?![\d.])", text):
             try:
                 values.add(float(m.group(1)))
             except ValueError:
                 continue
         # 百分比
-        for m in re.finditer(r"\b(\d+(?:\.\d+)?)\s*%", text):
+        for m in re.finditer(r"(?<![\d.])(\d+(?:\.\d+)?)\s*%", text):
             try:
                 values.add(float(m.group(1)))
             except ValueError:
                 continue
         # 3 位以上整数（排除年份 2020-2029，但保留如 100、1024 这类实验数值）
-        for m in re.finditer(r"\b(\d{3,})\b", text):
+        for m in re.finditer(r"(?<![\d.])(\d{3,})(?![\d.])", text):
             try:
                 val = float(m.group(1))
                 # 排除年份
@@ -330,8 +469,16 @@ class QualityGate:
             if draft is None or not draft.content.strip():
                 continue
             extracted = self._extract_numeric_values(draft.content)
+            section_allowed = list(allowed_list)
+            # In revision mode the user's source is also ground truth.  Existing
+            # values may be preserved; only newly introduced values are rejected.
+            section_allowed.extend(
+                self._extract_numeric_values(
+                    ws.draft_sections.get(node.section_id, "")
+                )
+            )
             for val in extracted:
-                if not self._value_matches(val, allowed_list):
+                if not self._value_matches(val, section_allowed):
                     issues.append({
                         "type": "fabricated_metric",
                         "severity": "high",

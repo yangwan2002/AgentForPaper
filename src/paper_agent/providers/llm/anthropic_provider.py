@@ -213,6 +213,10 @@ class AnthropicProvider(LLMProvider):
         call_opts = {**self._default_options, **opts}
         call_opts.pop("stream", None)
         call_opts.pop("stream_options", None)
+        # StructuredParser uses the OpenAI ``response_format`` hint.  Anthropic
+        # Messages has no equivalent; the JSON-only prompt remains authoritative.
+        call_opts.pop("response_format", None)
+        call_opts.pop("max_completion_tokens", None)
 
         kwargs: dict = {
             "model": self._model,

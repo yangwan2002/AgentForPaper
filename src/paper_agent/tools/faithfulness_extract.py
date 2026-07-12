@@ -21,6 +21,7 @@
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterable
 
 from paper_agent.tools.quality_gate import _TEXT_CITATION, _is_non_citation_marker
@@ -28,6 +29,29 @@ from paper_agent.workspace.faithfulness import ClaimCitationPair
 
 # 句子边界字符：CJK 句末标点 + ASCII 句末标点 + 换行/回车（Req 1.3）。
 _SENTENCE_BOUNDARIES = frozenset("。！？.!?\n\r")
+_BIBLIOGRAPHY_HEADING = re.compile(
+    r"(?im)^\s*(?:参考文献(?:\s*\(References\))?|References|Bibliography)\s*:?\s*$"
+)
+
+
+def prepare_claim_text(content: str) -> str:
+    """Remove bibliography entries and repair PDF soft line wraps for auditing."""
+    match = _BIBLIOGRAPHY_HEADING.search(content)
+    body = content[: match.start()] if match else content
+    body = body.replace("\r\n", "\n").replace("\r", "\n")
+    # Repair English OCR hyphenation before handling the remaining soft wraps.
+    body = re.sub(r"([A-Za-z])-\n([a-z])", r"\1\2", body)
+
+    def join_soft_wrap(match: re.Match) -> str:
+        left, right = match.group(1), match.group(2)
+        separator = " " if left.isascii() and right.isascii() else ""
+        return left + separator + right
+
+    return re.sub(
+        r"([^。！？.!?；;：:\n])\n(?!\s*\n)([^\s])",
+        join_soft_wrap,
+        body,
+    )
 
 
 def split_sentences(
@@ -110,6 +134,8 @@ def extract_pairs(
     section_id: str,
     content: str,
     verified_ids: set[str],
+    *,
+    scope_to_citation: bool = False,
 ) -> tuple[list[ClaimCitationPair], list[ClaimCitationPair]]:
     """抽取声明-引用对，按引用是否已验证分区。
 
@@ -143,6 +169,26 @@ def extract_pairs(
         if _is_non_citation_marker(ref_id):
             continue
         sentence = _find_enclosing_sentence(sentences, match.start())
+        if scope_to_citation:
+            sentence_start = next(
+                (
+                    start
+                    for start, end, value in sentences
+                    if value == sentence and start <= match.start() < end
+                ),
+                match.start(),
+            )
+            marker_end = max(0, match.end() - sentence_start)
+            boundary = max(
+                sentence.rfind(char, 0, marker_end)
+                for char in "，,；;：:。！？.!?\n\r"
+            )
+            scoped = sentence[boundary + 1 : marker_end].strip()
+            # Very short prefixes such as "[1]" need the following sentence
+            # context; otherwise citations conventionally support the clause
+            # immediately preceding their marker.
+            if len(scoped.replace(match.group(0), "").strip()) >= 6:
+                sentence = scoped
 
         key = (sentence, ref_id)
         if key in seen:

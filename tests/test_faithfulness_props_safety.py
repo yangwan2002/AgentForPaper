@@ -192,9 +192,10 @@ def test_prop4_unverified_marked_and_judge_not_invoked(ws):
     report = list(scratch.citation_faithfulness)
 
     # (a) 判定器仅为已验证对被调用，从不为未验证对调用。
-    #     已验证对（title+abstract 非空、min_grounding_chars=0）全部触发一次判定，
-    #     故调用次数恰等于已验证对总数——从而未验证对贡献 0 次调用。
-    assert spy.calls == n_verified_pairs
+    #     重复的「同声明、同文献」可在同轮命中缓存；未验证对不增加调用。
+    assert spy.calls <= n_verified_pairs
+    if n_verified_pairs == 0:
+        assert spy.calls == 0
 
     # (b) 每个 unverified_reference=True 的发现：verdict 为 cannot_verify，
     #     且其 cited_reference_id 不属于已验证集合。

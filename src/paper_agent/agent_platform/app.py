@@ -414,7 +414,13 @@ def build_agent_app(
 
         effective_sink = NullSink()
     agent_llm = _wrap_llm_stack(
-        base_llm, policy, effective_sink, tracker, config.event_preview_chars
+        base_llm,
+        policy,
+        effective_sink,
+        tracker,
+        config.event_preview_chars,
+        config.total_token_budget,
+        "writer",
     )
 
     # 增量写路径的忠实性筛查（#2）：只拦「引用明确不支撑声明」的造假，拿不到文献

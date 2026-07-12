@@ -16,6 +16,9 @@ YAML + CSV 加载。写作智能体把 artifact 注入 prompt，质量闸据 art
 
 from __future__ import annotations
 
+import hashlib
+import json
+import re
 from dataclasses import dataclass, field
 
 
@@ -171,23 +174,36 @@ class ResearchArtifact:
         )
 
     def all_numeric_values(self) -> list[float]:
-        """收集所有实验 CSV 中的数值——供 QualityGate 做 grounding 检查。
+        """收集所有实验数据和超参数中的数值——供 QualityGate 做 grounding 检查。
 
-        从每条 ``Experiment.results_data.rows`` 抽出所有数值（可解析为 float 的），
-        去重后返回。这是「正文中允许出现的数字」的白名单基础。
+        从每条 ``Experiment.results_data.rows`` 与 ``hyperparameters`` 递归抽出
+        所有数值（可解析为 float 的），去重后返回。``stats`` 的派生值由
+        ``build_allowed_values`` 单独处理，避免重复引入经格式化后不稳定的中间值。
         """
         values: set[float] = set()
+
+        def collect(value: object) -> None:
+            if isinstance(value, dict):
+                for nested in value.values():
+                    collect(nested)
+                return
+            if isinstance(value, (list, tuple)):
+                for nested in value:
+                    collect(nested)
+                return
+            try:
+                values.add(float(value))
+            except (TypeError, ValueError):
+                return
+
         for exp in self.experiments:
-            rows = exp.results_data.get("rows") or []
-            for row in rows:
-                if not isinstance(row, dict):
-                    continue
-                for v in row.values():
-                    try:
-                        values.add(float(v))
-                    except (TypeError, ValueError):
-                        continue
+            collect(exp.hyperparameters)
+            collect((exp.results_data or {}).get("rows") or [])
         return sorted(values)
+
+    def contract(self) -> "ArtifactContract":
+        """Build the immutable, verifiable contract consumed by downstream agents."""
+        return ArtifactContract.from_artifact(self)
 
     # --- 序列化 ---
 
@@ -223,9 +239,254 @@ class ResearchArtifact:
         )
 
 
+def _slug(value: str) -> str:
+    normalized = re.sub(r"[^a-zA-Z0-9\u4e00-\u9fff]+", "-", value.strip().lower())
+    return normalized.strip("-") or "unnamed"
+
+
+@dataclass(frozen=True)
+class ArtifactContract:
+    """Immutable projection of user facts used for planning and commit checks."""
+
+    artifact_hash: str
+    evidence: dict[str, str]
+    allowed_entities: frozenset[str]
+    allowed_numeric_values: tuple[float, ...]
+    # entity -> evidence ids that define/measure that entity.
+    entity_evidence: dict[str, tuple[str, ...]]
+    # contribution/novelty evidence may link to concrete experiments.
+    evidence_links: dict[str, tuple[str, ...]]
+    experiment_ids: tuple[str, ...]
+    required_citations: frozenset[str]
+    complete: bool
+
+    @classmethod
+    def from_artifact(cls, artifact: ResearchArtifact) -> "ArtifactContract":
+        raw = artifact.to_dict()
+        raw.pop("artifact_dir", None)
+        digest = hashlib.sha256(
+            json.dumps(raw, ensure_ascii=False, sort_keys=True).encode("utf-8")
+        ).hexdigest()
+
+        evidence: dict[str, str] = {
+            "research:question": artifact.research_question,
+            "method:overview": artifact.method.overview,
+        }
+        entities: set[str] = set()
+        entity_evidence: dict[str, set[str]] = {}
+        evidence_links: dict[str, tuple[str, ...]] = {}
+
+        def bind_entity(entity: str, evidence_id: str) -> None:
+            normalized = entity.strip()
+            if len(normalized) < 2:
+                return
+            entities.add(normalized)
+            entity_evidence.setdefault(normalized.lower(), set()).add(evidence_id)
+            for token in re.findall(r"[A-Za-z][A-Za-z0-9+_.-]{1,39}", normalized):
+                if token.lower() in {
+                    "and", "with", "from", "using", "method", "model",
+                    "network", "module", "dataset", "metric",
+                }:
+                    continue
+                entities.add(token)
+                entity_evidence.setdefault(token.lower(), set()).add(evidence_id)
+
+        def bind_named_tokens(text: str, evidence_id: str) -> None:
+            for token in re.findall(r"[A-Za-z][A-Za-z0-9+_.-]{1,39}", text):
+                if token.lower() in {
+                    "and", "with", "from", "using", "method", "model",
+                    "network", "module", "dataset", "metric", "the",
+                }:
+                    continue
+                bind_entity(token, evidence_id)
+
+        for index, component in enumerate(artifact.method.key_components):
+            evidence_id = f"method:component:{_slug(component)}"
+            evidence[evidence_id] = component
+            bind_entity(component, evidence_id)
+        bind_named_tokens(artifact.method.overview, "method:overview")
+        for index, contribution in enumerate(artifact.contributions):
+            evidence_id = f"contribution:{index}"
+            evidence[evidence_id] = contribution.summary
+            bind_named_tokens(contribution.summary, evidence_id)
+            evidence_links[evidence_id] = tuple(
+                ref if ref.startswith("experiment:") else f"experiment:{ref}"
+                for ref in contribution.evidence_refs
+            )
+        experiment_ids: list[str] = []
+        experiments_complete = bool(artifact.experiments)
+        for experiment in artifact.experiments:
+            exp_id = experiment.experiment_id or f"experiment-{len(experiment_ids)}"
+            experiment_ids.append(exp_id)
+            experiment_evidence_id = f"experiment:{exp_id}"
+            evidence[experiment_evidence_id] = (
+                "实验事实："
+                + json.dumps(
+                    {
+                        "dataset": experiment.dataset,
+                        "baselines": experiment.baselines,
+                        "metrics": experiment.metrics,
+                        "hyperparameters": experiment.hyperparameters,
+                        "seed": experiment.seed,
+                        "hardware": experiment.hardware,
+                        "rows": (experiment.results_data or {}).get("rows") or [],
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True,
+                )
+            )
+            if experiment.dataset.strip():
+                evidence_id = f"dataset:{exp_id}"
+                evidence[evidence_id] = experiment.dataset.strip()
+                bind_entity(experiment.dataset, evidence_id)
+                entity_evidence.setdefault(
+                    experiment.dataset.strip().lower(), set()
+                ).add(experiment_evidence_id)
+            for baseline in experiment.baselines:
+                evidence_id = f"baseline:{exp_id}:{_slug(baseline)}"
+                evidence[evidence_id] = baseline
+                bind_entity(baseline, evidence_id)
+                entity_evidence.setdefault(baseline.strip().lower(), set()).add(
+                    experiment_evidence_id
+                )
+            for metric in experiment.metrics:
+                evidence_id = f"metric:{exp_id}:{_slug(metric)}"
+                evidence[evidence_id] = metric
+                bind_entity(metric, evidence_id)
+                entity_evidence.setdefault(metric.strip().lower(), set()).add(
+                    experiment_evidence_id
+                )
+            rows = (experiment.results_data or {}).get("rows") or []
+            experiments_complete = experiments_complete and bool(rows)
+        for index, claim in enumerate(artifact.novelty_claims):
+            evidence_id = f"novelty:{index}"
+            evidence[evidence_id] = claim
+            bind_named_tokens(claim, evidence_id)
+        for reference_id in artifact.must_cite_refs:
+            evidence[f"citation:{reference_id}"] = reference_id
+
+        complete = bool(
+            artifact.research_question.strip()
+            and artifact.method.overview.strip()
+            and artifact.contributions
+            and experiments_complete
+        )
+        return cls(
+            artifact_hash=digest,
+            evidence=evidence,
+            allowed_entities=frozenset(entities),
+            allowed_numeric_values=tuple(_build_allowed_numeric_values(artifact)),
+            entity_evidence={
+                key: tuple(sorted(value))
+                for key, value in sorted(entity_evidence.items())
+            },
+            evidence_links=evidence_links,
+            experiment_ids=tuple(experiment_ids),
+            required_citations=frozenset(artifact.must_cite_refs),
+            complete=complete,
+        )
+
+    def evidence_ids_for(self, section_id: str, title: str) -> list[str]:
+        """Return deterministic evidence scope for a manuscript section."""
+        key = f"{section_id} {title}".lower()
+        if any(token in key for token in ("intro", "引言", "绪论")):
+            prefixes = ("research:", "contribution:", "citation:")
+        elif any(token in key for token in ("experiment", "result", "实验", "结果", "消融")):
+            prefixes = ("experiment:", "dataset:", "baseline:", "metric:")
+        elif any(token in key for token in ("conclusion", "结论", "总结", "讨论")):
+            prefixes = ("contribution:", "experiment:", "novelty:")
+        elif any(
+            token in key
+            for token in (
+                "related",
+                "background",
+                "references",
+                "相关",
+                "理论",
+                "背景",
+                "参考文献",
+            )
+        ):
+            prefixes = ("research:", "citation:")
+        else:
+            prefixes = ("method:", "novelty:", "dataset:", "experiment:")
+        return sorted(key for key in self.evidence if key.startswith(prefixes))
+
+    def required_evidence_ids_for(self, section_id: str, title: str) -> list[str]:
+        """Minimal evidence that must be visibly realised in a section."""
+        key = f"{section_id} {title}".lower()
+        if any(token in key for token in ("intro", "引言", "绪论")):
+            prefixes = ("research:", "contribution:")
+        elif any(token in key for token in ("experiment", "result", "实验", "结果", "消融")):
+            prefixes = ("experiment:",)
+        elif any(token in key for token in ("conclusion", "结论", "总结", "讨论")):
+            prefixes = ("contribution:", "novelty:")
+        elif any(
+            token in key for token in ("related", "references", "相关", "参考文献")
+        ):
+            prefixes = ("citation:",)
+        else:
+            prefixes = ("method:",)
+        return sorted(key for key in self.evidence if key.startswith(prefixes))
+
+    def compact_context(self) -> str:
+        lines = [
+            f"artifact_hash={self.artifact_hash}",
+            f"complete={str(self.complete).lower()}",
+            "allowed_numeric_values="
+            + json.dumps(self.allowed_numeric_values[:256], ensure_ascii=False),
+            "allowed_entities="
+            + json.dumps(sorted(self.allowed_entities), ensure_ascii=False),
+            "evidence:",
+        ]
+        lines.extend(
+            f"- {key}: {value[:2000]}" for key, value in self.evidence.items()
+        )
+        return "\n".join(lines)
+
+
+def _build_allowed_numeric_values(artifact: ResearchArtifact) -> list[float]:
+    """Build the canonical numeric whitelist stored in ArtifactContract."""
+    allowed: set[float] = set(artifact.all_numeric_values())
+    for experiment in artifact.experiments:
+        rows = (experiment.results_data or {}).get("rows") or []
+        numeric_columns: dict[str, list[float]] = {}
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            for key, raw in row.items():
+                try:
+                    numeric_columns.setdefault(str(key), []).append(float(raw))
+                except (TypeError, ValueError):
+                    continue
+        for values in numeric_columns.values():
+            for index, left in enumerate(values):
+                for right in values[index + 1 :]:
+                    allowed.add(abs(left - right))
+        stats = (experiment.results_data or {}).get("stats") or {}
+        for value in stats.values():
+            if not isinstance(value, dict):
+                continue
+            mean = value.get("mean")
+            std = value.get("std")
+            if mean is not None:
+                allowed.add(float(mean))
+            if mean is not None and std is not None:
+                allowed.add(float(mean) - float(std))
+                allowed.add(float(mean) + float(std))
+            for key in ("min", "max"):
+                if value.get(key) is not None:
+                    allowed.add(float(value[key]))
+    for value in list(allowed):
+        if 0 <= abs(value) <= 1:
+            allowed.add(value * 100)
+    return sorted(allowed)
+
+
 __all__ = [
     "Contribution",
     "Experiment",
     "MethodSpec",
     "ResearchArtifact",
+    "ArtifactContract",
 ]

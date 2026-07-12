@@ -100,6 +100,40 @@ def build_reviewer_llm_provider(config: Config) -> LLMProvider | None:
     return build_llm_provider(reviewer_cfg)
 
 
+def resolved_llm_model(config: Config, *, reviewer: bool = False) -> str:
+    """Return the effective model name used for diversity enforcement."""
+    provider = (
+        config.reviewer_llm_provider or config.llm_provider
+        if reviewer
+        else config.llm_provider
+    ).lower()
+    model = (
+        config.reviewer_llm_model or config.llm_model
+        if reviewer
+        else config.llm_model
+    )
+    if model:
+        return model.strip().lower()
+    preset = VENDOR_PRESETS.get(provider)
+    return preset.default_model.strip().lower() if preset else ""
+
+
+def reviewer_model_is_diverse(config: Config) -> bool:
+    """True only when reviewer explicitly resolves to another model."""
+    if config.llm_provider.lower() == "mock":
+        return True
+    if (config.reviewer_llm_provider or config.llm_provider).lower() == "mock":
+        return False
+    writer_model = resolved_llm_model(config)
+    reviewer_model = resolved_llm_model(config, reviewer=True)
+    return bool(
+        config.reviewer_llm_model
+        and writer_model
+        and reviewer_model
+        and reviewer_model != writer_model
+    )
+
+
 def build_vlm_provider(config: Config) -> LLMProvider | None:
     """据配置构造**多模态（vision）** LLM provider（visual-layout-acceptance）。
 

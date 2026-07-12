@@ -21,6 +21,7 @@ from paper_agent.agent_platform.models import (
 )
 from paper_agent.agent_platform.session_store import load_session, save_session
 from paper_agent.agent_platform.task_agent import TaskAgent
+from paper_agent.ingestion import IngestionConfirmationRequired
 from paper_agent.observability.usage import UsageTracker
 from paper_agent.orchestrator import InputValidationError
 from paper_agent.providers.llm.base import LLMResponse, ToolCall
@@ -204,6 +205,39 @@ def test_intake_draft_output_format_from_extension():
     intake = TaskIntake(_repo(), draft_loader=lambda p: "x")
     session = intake.start(WritingTask(instruction="改一下", draft_path="paper.tex"))
     assert session.workspace.output_format is OutputFormat.LATEX
+
+
+def test_intake_persists_ingestion_quality_before_agent_runs(tmp_path):
+    draft = tmp_path / "paper.md"
+    draft.write_text("# Introduction\nReadable body with one \ufffd marker.", encoding="utf-8")
+    intake = TaskIntake(_repo())
+
+    session = intake.start(WritingTask(instruction="润色", draft_path=str(draft)))
+
+    quality = session.workspace.profile["ingestion_quality"]
+    assert quality["severity"] == "warning"
+    assert quality["metrics"]["replacement_char_count"] == 1
+
+
+def test_intake_surfaces_recoverable_confirmation_requirement(tmp_path):
+    draft = tmp_path / "paper.md"
+    draft.write_text("Readable academic prose. " * 220, encoding="utf-8")
+    intake = TaskIntake(_repo())
+
+    with pytest.raises(IngestionConfirmationRequired) as raised:
+        intake.start(WritingTask(instruction="润色", draft_path=str(draft)))
+
+    assert raised.value.report.status == "confirmation_required"
+    session = intake.start(
+        WritingTask(
+            instruction="润色",
+            draft_path=str(draft),
+            confirm_ingestion=True,
+        )
+    )
+    assert session.workspace.profile["ingestion_quality"]["status"] == (
+        "confirmation_required"
+    )
 
 
 # --- session_store 续跑 ------------------------------------------------------

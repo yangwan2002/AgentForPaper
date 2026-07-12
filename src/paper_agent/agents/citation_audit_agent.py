@@ -30,6 +30,7 @@ class CitationAuditAgent(Agent):
         draft = ws.original_draft or ""
         findings: list[dict] = []
         verified_refs: list[ReferenceEntry] = []
+        alias_updates: dict[str, set[str]] = {}
         logs: list[str] = []
 
         if not draft.strip():
@@ -65,16 +66,33 @@ class CitationAuditAgent(Agent):
             # 核验为真实的文献入库，供写作引用（Req 4）。
             if result.matched is not None:
                 real = result.matched
+                alias = str(i)
                 if real.id not in existing_ids:
-                    marked = ReferenceEntry(**{**vars(real), "verified": True})
+                    marked = ReferenceEntry(
+                        **{
+                            **vars(real),
+                            "verified": True,
+                            "citation_aliases": sorted(
+                                {*real.citation_aliases, alias}
+                            ),
+                        }
+                    )
                     verified_refs.append(marked)
                     existing_ids.add(real.id)
+                else:
+                    alias_updates.setdefault(real.id, set()).add(alias)
 
         # ③ 引用-文献对应
         findings.extend(self._check_linkage(parsed))
 
         def mutate(w: PaperWorkspace) -> None:
             w.citation_audit = findings
+            for reference in w.verified_references:
+                additions = alias_updates.get(reference.id, set())
+                if additions:
+                    reference.citation_aliases = sorted(
+                        {*reference.citation_aliases, *additions}
+                    )
             w.verified_references.extend(verified_refs)
 
         logs.append(

@@ -1,0 +1,59 @@
+{
+  "id": "smoke_generation_grounded",
+  "description": "使用完整结构化研究数据跑通从零生成、质量检查与 Markdown 导出。",
+  "tags": ["smoke", "generation", "artifact"],
+  "input": {
+    "topic_background": "基于检索增强生成的学术写作事实一致性研究",
+    "output_format": "markdown",
+    "artifact": {
+      "research_question": "结构化研究数据能否降低学术写作中的事实与数字幻觉？",
+      "method": {
+        "overview": "构建一个在写作前注入结构化实验事实、写作后执行确定性核验的双阶段方法。",
+        "key_components": ["结构化事实注入", "数字白名单核验", "引用闭环检查"]
+      },
+      "contributions": [
+        {
+          "summary": "提出结构化事实注入与确定性核验结合的论文写作流程。",
+          "evidence_refs": ["main"]
+        }
+      ],
+      "experiments": [
+        {
+          "experiment_id": "main",
+          "dataset": "公开脱敏论文修改任务集",
+          "baselines": ["prompt-only"],
+          "metrics": ["factual_accuracy"],
+          "seed": 42,
+          "results_data": {
+            "columns": ["method", "factual_accuracy"],
+            "rows": [
+              {"method": "prompt-only", "factual_accuracy": 81.2},
+              {"method": "grounded", "factual_accuracy": 94.6}
+            ],
+            "stats": {
+              "factual_accuracy": {
+                "mean": 87.9,
+                "std": 6.7,
+                "min": 81.2,
+                "max": 94.6
+              }
+            }
+          }
+        }
+      ]
+    }
+  },
+  "assertions": {
+    "run_completed": true,
+    "export_created": true,
+    "expected_format": "markdown",
+    "max_fabricated_metrics": 0,
+    "required_sections": ["introduction", "method", "conclusion"],
+    "terminated_reason_in": [
+      "quality_met",
+      "iteration_limit",
+      "iteration_limit_unparsed_review",
+      "stagnation"
+    ]
+  }
+}

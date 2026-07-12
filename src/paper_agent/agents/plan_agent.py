@@ -10,7 +10,7 @@
 from __future__ import annotations
 
 from paper_agent.agents.base import Agent, AgentContext, AgentResult
-from paper_agent.ingestion import split_draft_into_sections
+from paper_agent.ingestion import split_document_sections
 from paper_agent.parsing import StructuredParser
 from paper_agent.prompts import templates
 from paper_agent.providers.llm.base import LLMProvider
@@ -86,7 +86,9 @@ class PlanAgent(Agent):
     def _outline_from_draft(
         self, ws: PaperWorkspace
     ) -> tuple[list[OutlineNode], dict[str, bool], dict[str, str]]:
-        sections = split_draft_into_sections(ws.original_draft or "")
+        # 与 CLI / Eval / Agent 文件导入共享入口；PDF 抽取丢失标题层级时，
+        # 仍会使用编号和常见学术章节名作确定性兜底。
+        sections = split_document_sections(ws.original_draft or "")
         if not sections:
             # 初稿为空：回退通用骨架（极少见，草稿修订模式不应给空初稿）。
             outline = [
@@ -94,10 +96,30 @@ class PlanAgent(Agent):
                 for i, (sid, title) in enumerate(_DEFAULT_SECTIONS)
             ]
             return outline, {}, {}
-        outline = [
-            OutlineNode(section_id=sid, title=title, order=i)
-            for i, (sid, title, _content) in enumerate(sections)
-        ]
+        contract = (
+            ws.artifact.contract()
+            if ws.artifact is not None and not ws.artifact.is_empty()
+            else None
+        )
+        outline = []
+        for i, (sid, title, _content) in enumerate(sections):
+            evidence_ids = (
+                contract.evidence_ids_for(sid, title) if contract else []
+            )
+            required_ids = (
+                contract.required_evidence_ids_for(sid, title)
+                if contract
+                else []
+            )
+            outline.append(
+                OutlineNode(
+                    section_id=sid,
+                    title=title,
+                    order=i,
+                    required_evidence_ids=required_ids,
+                    allowed_evidence_ids=evidence_ids,
+                )
+            )
         draft_sections = {sid: content for sid, _t, content in sections}
         return outline, {}, draft_sections
 
@@ -105,6 +127,17 @@ class PlanAgent(Agent):
         self, ws: PaperWorkspace
     ) -> tuple[list[OutlineNode], dict[str, bool]]:
         """从零生成模式：LLM 大纲，解析失败回退启发式骨架。"""
+        if ws.artifact is not None and not ws.artifact.is_empty():
+            contract = ws.artifact.contract()
+            if ws.profile.get("strict_artifact", False) and not contract.complete:
+                raise ValueError(
+                    "严格事实模式要求完整 ResearchArtifact（研究问题、方法、贡献及含结果行的实验）"
+                )
+            # Accuracy-first: the artifact itself determines the manuscript skeleton.
+            # An LLM is not allowed to invent a chapter before evidence is assigned.
+            return self._artifact_outline(ws), {}
+        if ws.profile.get("strict_artifact", False):
+            raise ValueError("严格事实模式下禁止在没有 ResearchArtifact 时生成论文")
         llm_result = self._try_llm_outline(ws)
         if llm_result is not None:
             return llm_result
@@ -115,10 +148,12 @@ class PlanAgent(Agent):
     ) -> tuple[list[OutlineNode], dict[str, bool]] | None:
         """经 StructuredParser 生成 JSON 大纲；非 PARSED 则返回 None 以回退。"""
         draft_excerpt = (ws.original_draft or "")[:500]
+        contract = ws.artifact.contract() if ws.artifact is not None else None
         messages = templates.plan_outline(
             topic_background=ws.topic_background or "",
             input_mode=ws.input_mode.value,
             draft_excerpt=draft_excerpt,
+            artifact_contract=contract.compact_context() if contract else "",
         )
         outcome = self._parser.request_json(
             messages, required_keys=("sections",)
@@ -137,16 +172,65 @@ class PlanAgent(Agent):
                 continue
             sid = str(sec.get("section_id") or f"sec_{i}")
             title = str(sec.get("title") or sid)
+            requested = [
+                str(x) for x in (sec.get("required_evidence_ids") or [])
+            ]
+            allowed_requested = [
+                str(x) for x in (sec.get("allowed_evidence_ids") or requested)
+            ]
+            if contract is not None:
+                valid = set(contract.evidence)
+                if any(x not in valid for x in requested + allowed_requested):
+                    return None
+                if not requested:
+                    requested = contract.evidence_ids_for(sid, title)
+                if not allowed_requested:
+                    allowed_requested = list(requested)
             outline.append(
                 OutlineNode(
                     section_id=sid,
                     title=title,
                     order=i,
                     summary_hint=str(sec.get("summary_hint", "")),
+                    required_evidence_ids=requested,
+                    allowed_evidence_ids=allowed_requested,
                 )
             )
             flags[sid] = bool(sec.get("needs_retrieval", False))
         return (outline, flags) if outline else None
+
+    def _artifact_outline(
+        self, ws: PaperWorkspace
+    ) -> list[OutlineNode]:
+        """Build a deterministic skeleton whose every section has an evidence scope."""
+        assert ws.artifact is not None
+        contract = ws.artifact.contract()
+        nodes: list[OutlineNode] = []
+        sections = [
+            ("introduction", "引言"),
+            ("method", "方法"),
+            ("experiments", "实验"),
+            ("conclusion", "结论"),
+        ]
+        if contract.required_citations:
+            sections.insert(1, ("related_work", "相关工作"))
+        for index, (section_id, title) in enumerate(sections):
+            evidence_ids = contract.evidence_ids_for(section_id, title)
+            required_ids = contract.required_evidence_ids_for(section_id, title)
+            summary = "；".join(
+                contract.evidence[eid] for eid in evidence_ids[:8]
+            )
+            nodes.append(
+                OutlineNode(
+                    section_id=section_id,
+                    title=title,
+                    order=index,
+                    summary_hint=summary,
+                    required_evidence_ids=required_ids,
+                    allowed_evidence_ids=evidence_ids,
+                )
+            )
+        return nodes
 
     def _fallback_outline(
         self, ws: PaperWorkspace

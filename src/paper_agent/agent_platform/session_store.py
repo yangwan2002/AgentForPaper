@@ -49,6 +49,7 @@ def _task_to_dict(task: WritingTask) -> dict:
         "workspace_id": task.workspace_id,
         "draft_path": task.draft_path,
         "topic_background": task.topic_background,
+        "confirm_ingestion": task.confirm_ingestion,
     }
 
 
@@ -59,6 +60,7 @@ def _task_from_dict(data: dict | None) -> WritingTask:
         workspace_id=data.get("workspace_id"),
         draft_path=data.get("draft_path"),
         topic_background=data.get("topic_background"),
+        confirm_ingestion=bool(data.get("confirm_ingestion", False)),
     )
 
 

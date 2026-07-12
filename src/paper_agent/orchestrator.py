@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import time
 import uuid
+from copy import deepcopy
 from dataclasses import dataclass, field
 
 from paper_agent.agents.base import Agent, AgentContext, AgentResult
@@ -23,6 +24,13 @@ from paper_agent.export.factory import get_exporter
 from paper_agent.export.format_models import FormatGateReport, RepairTerminalStatus
 from paper_agent.hooks import Hooks
 from paper_agent.observability.events import Event, EventKind, EventSink, NullSink
+from paper_agent.observability.budget import (
+    BudgetExceededError,
+    RunBudgetContext,
+    activate_run_budget,
+    current_run_budget,
+    reset_run_budget,
+)
 from paper_agent.observability.usage import UsageTracker
 from paper_agent.workspace.models import (
     InputMode,
@@ -146,6 +154,27 @@ class Orchestrator:
         request: PaperRequest | None = None,
         resume_id: str | None = None,
     ) -> PaperResult:
+        """运行完整工作流；预算计时覆盖初始化、全部阶段与收尾。"""
+        budget = RunBudgetContext(
+            token_cap=max(0, int(self._config.total_token_budget or 0)),
+            duration_cap_s=max(
+                0.0, float(getattr(self._config, "wall_clock_deadline_s", 0.0) or 0.0)
+            ),
+            call_cap=max(
+                0, int(getattr(self._config, "total_llm_call_budget", 0) or 0)
+            ),
+        )
+        token = activate_run_budget(budget)
+        try:
+            return self._run_impl(request=request, resume_id=resume_id)
+        finally:
+            reset_run_budget(token)
+
+    def _run_impl(
+        self,
+        request: PaperRequest | None = None,
+        resume_id: str | None = None,
+    ) -> PaperResult:
         if resume_id is not None:
             ws = self._repo.load(resume_id)
             if ws is None:
@@ -200,9 +229,15 @@ class Orchestrator:
         self._enrich_grounding_phase(ws)
         reason, unmet = self._feedback_loop(ws)
         # 术语抽取（可选）：语言润色前填充 ws.glossary，供润色统一用词。
-        self._terminology_phase(ws)
+        if not self._budget_exceeded() and self._has_optional_time(90):
+            self._terminology_phase(ws)
+        else:
+            self._emit(EventKind.AGENT_LOG, "预算/截止时间已达，跳过可选术语抽取")
         # 语言润色（可选）：反馈循环收敛后、导出前运行一次独立语言 pass。
-        self._polish_phase(ws)
+        if not self._budget_exceeded() and self._has_optional_time(180):
+            self._polish_phase(ws)
+        else:
+            self._emit(EventKind.AGENT_LOG, "预算/截止时间已达，跳过可选语言润色")
         export = self._export_phase(ws, reason)
         # 原创性自检 + 可投递性判定（不改动工作区，不新增导出文件；结果并入
         # export.notes 与 PaperResult，并经事件上报）。
@@ -470,10 +505,10 @@ class Orchestrator:
         prev_sig: str | None = None
         stagnation = 0
         retrieval_revisited = False
-        start_time = time.monotonic()
         while True:
-            # 墙钟超时：异常场景下防无限跑（烧 token/时间）。超时即降级终止、仍导出。
-            if self._deadline_exceeded(start_time):
+            # 全局截止时间从 Orchestrator.run 入口计时，而非仅反馈循环。
+            budget_reason = self._budget_reason()
+            if budget_reason == "deadline":
                 self._emit(
                     EventKind.AGENT_LOG,
                     f"墙钟超时（>{self._config.wall_clock_deadline_s}s），降级终止",
@@ -492,10 +527,10 @@ class Orchestrator:
                 )
                 return reason, self._unmet_dimensions(ws)
             # #19：预算超额即降级终止（仍执行导出）。
-            if self._budget_exceeded():
+            if budget_reason:
                 self._emit(
                     EventKind.AGENT_LOG,
-                    f"全局 token 预算超额（{self._tracker.total_tokens}），降级终止",
+                    f"全局预算已达（{budget_reason}），降级终止",
                 )
                 return "budget_exceeded", self._unmet_dimensions(ws)
             self._emit(EventKind.ITERATION, f"第 {ws.iteration + 1} 轮")
@@ -577,6 +612,18 @@ class Orchestrator:
         ``iteration_limit_unparsed_review`` 终止（最近评审不可信），仍使用工作区中
         最近一次成功写入/解析的章节草稿执行全部已配置的导出格式，不中止管线。
         """
+        blockers = self._artifact_export_blockers(ws)
+        if blockers:
+            note = (
+                "ArtifactCommitGate 未通过，已阻止正常论文导出；"
+                f"请先修复 {len(blockers)} 个事实约束问题。"
+            )
+            self._emit(EventKind.AGENT_LOG, note)
+            return ExportResult(
+                output_format=ws.output_format,
+                files=[],
+                notes=[note, *[item.get("message", "") for item in blockers[:10]]],
+            )
         if reason == "iteration_limit_unparsed_review":
             self._emit(
                 EventKind.AGENT_LOG,
@@ -590,6 +637,34 @@ class Orchestrator:
         # 任务 21.1：接入确定性格式闸 + 有界修复循环（Req 6.8/8.5/11.2-11.5/12.1）。
         result = self._run_format_gate(ws, exporter, result)
         return result
+
+    def _artifact_export_blockers(self, ws: PaperWorkspace) -> list[dict]:
+        artifact = ws.artifact
+        if artifact is None or artifact.is_empty():
+            return []
+        from paper_agent.tools.artifact_commit_gate import ArtifactCommitGate
+
+        gate = ArtifactCommitGate()
+        blockers: list[dict] = []
+        for node in ws.ordered_sections():
+            draft = ws.section_drafts.get(node.section_id)
+            strict = bool(
+                node.required_evidence_ids
+                or node.allowed_evidence_ids
+                or (draft and (draft.artifact_hash or draft.evidence_ids))
+            )
+            if not strict:
+                continue
+            if draft is None:
+                blockers.append({
+                    "type": "empty_section",
+                    "severity": "high",
+                    "section_id": node.section_id,
+                    "message": f"章节《{node.title}》尚无通过事实门禁的正文。",
+                })
+                continue
+            blockers.extend(gate.check(ws, node, draft).high_violations)
+        return blockers
 
     def _run_format_gate(
         self, ws: PaperWorkspace, exporter, result: ExportResult
@@ -883,8 +958,32 @@ class Orchestrator:
         """
         if self._polish is None:
             return
+        before = deepcopy(ws.section_drafts)
         self._emit(EventKind.PHASE, "语言润色阶段")
         self._run_agent(ws, self._polish, "语言润色：逐章节语言与一致性校对")
+        blockers = self._artifact_export_blockers(ws)
+        if blockers:
+            changed = {
+                sid
+                for sid, draft in ws.section_drafts.items()
+                if sid in before and draft.content != before[sid].content
+            }
+            if changed:
+                def rollback(w: PaperWorkspace) -> None:
+                    for sid in changed:
+                        w.section_drafts[sid] = before[sid]
+                    w.artifact_violations.extend(blockers)
+
+                self._apply(ws, AgentResult(mutations=[rollback]))
+                self._emit(
+                    EventKind.AGENT_LOG,
+                    f"润色后事实复检失败，已回滚 {len(changed)} 个章节",
+                )
+
+        def clear_modified_sections(w: PaperWorkspace) -> None:
+            w.profile["modified_section_ids"] = []
+
+        self._repo.update(ws, clear_modified_sections)
 
     def _originality_phase(self, ws: PaperWorkspace) -> list[dict]:
         """原创性 / 相似度自检（可选，确定性，不改动工作区）。
@@ -1011,18 +1110,75 @@ class Orchestrator:
         #15：在智能体执行前后触发 ``Hooks`` 扩展点（审计/限流等）。
         """
         ctx = AgentContext(workspace=ws, extras=extras or {})
-        self._hooks.before_agent(agent.name, ctx)
-        self._emit(EventKind.AGENT_START, label)
-        result = agent.run(ctx)
+        before_writing = (
+            {sid: draft.content for sid, draft in ws.section_drafts.items()}
+            if agent is self._writing
+            else None
+        )
+        try:
+            self._check_run_budget()
+            self._hooks.before_agent(agent.name, ctx)
+            self._emit(EventKind.AGENT_START, label)
+            result = agent.run(ctx)
+        except BudgetExceededError as exc:
+            self._emit(
+                EventKind.DEGRADATION,
+                f"{label} 在调用前因预算停止（{exc.reason}）",
+                feature="run_budget",
+                reason=exc.reason,
+            )
+            return
         self._hooks.after_agent(agent.name, ctx, result)
         for log in result.logs:
             self._emit(EventKind.AGENT_LOG, log)
         self._apply(ws, result)
+        if before_writing is not None:
+            modified = set(ws.profile.get("modified_section_ids") or [])
+            for sid, draft in ws.section_drafts.items():
+                previous = before_writing.get(sid)
+                if previous == draft.content:
+                    continue
+                if (
+                    previous is None
+                    and ws.input_mode is InputMode.DRAFT_REVISION
+                    and draft.content == ws.draft_sections.get(sid, "")
+                ):
+                    continue
+                modified.add(sid)
+            modified_ids = sorted(modified)
+
+            def persist_modified_sections(w: PaperWorkspace) -> None:
+                w.profile["modified_section_ids"] = modified_ids
+
+            self._repo.update(ws, persist_modified_sections)
 
     def _budget_exceeded(self) -> bool:
-        """#19：全局 token 预算是否已超额（超额即降级，跳过进一步修订）。"""
-        cap = self._config.total_token_budget
-        return bool(cap) and self._tracker is not None and self._tracker.total_tokens >= cap
+        return bool(self._budget_reason())
+
+    @staticmethod
+    def _has_optional_time(reserve_s: float) -> bool:
+        context = current_run_budget()
+        return context is None or context.remaining_s >= reserve_s
+
+    def _check_run_budget(self) -> None:
+        context = current_run_budget()
+        if context is None:
+            return
+        context.check(
+            total_tokens=self._tracker.total_tokens if self._tracker else 0,
+            calls=self._tracker.calls if self._tracker else 0,
+        )
+
+    def _budget_reason(self) -> str:
+        """返回当前硬预算原因；检查本身不让受控异常逃出编排器。"""
+        context = current_run_budget()
+        if context is None:
+            return ""
+        try:
+            self._check_run_budget()
+        except BudgetExceededError as exc:
+            return exc.reason
+        return ""
 
     def _deadline_exceeded(self, start_time: float) -> bool:
         """墙钟是否超时（``wall_clock_deadline_s <= 0`` 表示不限）。"""

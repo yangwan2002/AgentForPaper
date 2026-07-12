@@ -10,10 +10,17 @@
 
 from __future__ import annotations
 
+import time
 from types import SimpleNamespace
 
 import pytest
 
+from paper_agent.observability.budget import (
+    BudgetExceededError,
+    RunBudgetContext,
+    activate_run_budget,
+    reset_run_budget,
+)
 from paper_agent.providers.llm.base import LLMError, Message
 from paper_agent.providers.llm.openai_compatible import OpenAICompatibleProvider
 from paper_agent.providers.llm.resilient import ResilientLLMProvider
@@ -106,4 +113,36 @@ def test_provider_no_longer_retries_internally():
     # 不经 Resilient 直接调用 → 异常原样透传，不重试。
     with pytest.raises(TimeoutError):
         base.complete([Message("user", "hi")])
+    assert calls["n"] == 1
+
+
+def test_resilient_backoff_does_not_cross_global_deadline():
+    base = OpenAICompatibleProvider(
+        model="m", api_key="k", base_url="http://local"
+    )
+    calls = {"n": 0}
+
+    def always_fail(**kwargs):
+        calls["n"] += 1
+        raise TimeoutError("timed out")
+
+    _inject_client(base, always_fail)
+    resilient = ResilientLLMProvider(
+        base,
+        RetryPolicy(
+            max_retries=3,
+            base_backoff=0.2,
+            max_backoff=0.2,
+            jitter=0.0,
+        ),
+    )
+    budget_token = activate_run_budget(RunBudgetContext(duration_cap_s=0.05))
+    started = time.monotonic()
+    try:
+        with pytest.raises(BudgetExceededError, match="deadline"):
+            resilient.complete([Message("user", "hi")], timeout=10)
+    finally:
+        reset_run_budget(budget_token)
+
+    assert time.monotonic() - started < 0.15
     assert calls["n"] == 1

@@ -1,0 +1,22 @@
+{
+  "id": "smoke_draft_revision",
+  "description": "跑通已有论文初稿的章节切分、修订与导出，不引入未核验引用。",
+  "tags": ["smoke", "revision"],
+  "input": {
+    "draft": "# 引言\n\n学术写作系统需要同时兼顾效率与事实准确性。本文研究结构化事实约束对写作可靠性的影响。\n\n# 方法\n\n系统在生成前读取研究描述，在生成后检查正文中的引用和实验数字。\n\n# 结论\n\n结构化输入和确定性检查可以形成互补的质量控制流程。",
+    "output_format": "markdown"
+  },
+  "assertions": {
+    "run_completed": true,
+    "export_created": true,
+    "expected_format": "markdown",
+    "required_sections": ["引言", "方法", "结论"],
+    "forbid_terms": ["TODO", "FIXME"],
+    "terminated_reason_in": [
+      "quality_met",
+      "iteration_limit",
+      "iteration_limit_unparsed_review",
+      "stagnation"
+    ]
+  }
+}

@@ -16,9 +16,27 @@ from __future__ import annotations
 import os
 from typing import Callable
 
+from paper_agent.ingestion.quality import (
+    IngestionQualityReport,
+    assess_ingestion_quality,
+)
+from paper_agent.ingestion.sections import split_draft_into_sections
+
 
 class DocumentLoadError(Exception):
     """文档加载失败（不支持的格式、缺依赖、解析错误）。"""
+
+
+class IngestionConfirmationRequired(DocumentLoadError):
+    """文档正文可读但质量边缘，调用方必须显式确认后才能继续。"""
+
+    def __init__(self, path: str, report: IngestionQualityReport) -> None:
+        self.path = path
+        self.report = report
+        warnings = "；".join(report.warnings)
+        super().__init__(
+            f"文档摄入需要确认（评分 {report.score}/100）：{warnings}"
+        )
 
 
 def _load_text(path: str, asset_dir: str | None = None) -> str:
@@ -196,11 +214,34 @@ def supported_extensions() -> list[str]:
     return sorted(_LOADERS)
 
 
-def load_document(path: str, asset_dir: str | None = None) -> str:
+def load_document(
+    path: str,
+    asset_dir: str | None = None,
+    *,
+    allow_confirmation: bool = False,
+    confirm: bool | None = None,
+) -> str:
     """按扩展名把文档加载为（富）文本。
 
     asset_dir：若提供，PDF 中的图片会被抽取保存到该目录。
     """
+    text, _report = load_document_with_quality(
+        path,
+        asset_dir=asset_dir,
+        allow_confirmation=allow_confirmation,
+        confirm=confirm,
+    )
+    return text
+
+
+def load_document_with_quality(
+    path: str,
+    asset_dir: str | None = None,
+    *,
+    allow_confirmation: bool = False,
+    confirm: bool | None = None,
+) -> tuple[str, IngestionQualityReport]:
+    """加载并检查质量；严重损坏拒绝，边缘结构须显式确认。"""
     if not os.path.isfile(path):
         raise DocumentLoadError(f"文件不存在：{path}")
     ext = os.path.splitext(path)[1].lower()
@@ -209,56 +250,33 @@ def load_document(path: str, asset_dir: str | None = None) -> str:
         raise DocumentLoadError(
             f"不支持的文件类型 {ext}；支持：{', '.join(supported_extensions())}"
         )
-    return loader(path, asset_dir)
+    text = loader(path, asset_dir)
+    page_count = _pdf_page_count(path) if ext == ".pdf" else None
+    report = assess_ingestion_quality(
+        text, page_count=page_count, source_type=ext
+    )
+    if not report.is_acceptable:
+        reasons = "；".join(report.fatal_reasons)
+        raise DocumentLoadError(
+            f"文档摄入质量检查失败（评分 {report.score}/100）：{reasons}"
+        )
+    allowed = allow_confirmation if confirm is None else bool(confirm)
+    if report.confirmation_required and not allowed:
+        raise IngestionConfirmationRequired(path, report)
+    return text, report
 
 
-# --- 初稿结构切分（供草稿修订模式保留初稿内容） ---
+def _pdf_page_count(path: str) -> int | None:
+    """尽力读取 PDF 页数，不让可选依赖问题掩盖正文加载结果。"""
+    try:
+        import fitz  # PyMuPDF  # noqa: WPS433
 
-import re  # noqa: E402 - 顶层导入风格统一，此处就近放置
+        with fitz.open(path) as doc:
+            return len(doc)
+    except Exception:
+        try:
+            from pypdf import PdfReader  # noqa: WPS433
 
-# 匹配章节标题行：Markdown 的 #/##... 或 LaTeX 的 \section{}/\subsection{} 等。
-_HEADING = re.compile(
-    r"^(?:"
-    r"(?P<md>#{1,6})\s+(?P<md_title>.+?)"
-    r"|"
-    r"\\(?:sub){0,2}section\*?\{(?P<tex_title>[^}]+)\}"
-    r")\s*$"
-)
-
-
-def split_draft_into_sections(draft: str) -> list[tuple[str, str, str]]:
-    """把初稿按章节标题切成 ``[(section_id, title, content), ...]``。
-
-    支持两种标题：Markdown（``# 标题``）与 LaTeX（``\\section{标题}``）。
-    每个标题开启一个新章节，其后到下一标题前的正文归为该章节内容。
-
-    无任何标题时，返回单个 ``("sec_0", "正文", draft)``——**保留整篇初稿**，
-    而不是丢弃它回退到通用骨架（修复：草稿修订模式不应把 20 页初稿压成 300 字
-    后从零重写）。``section_id`` 为 ``sec_<i>``（章节序号），确定且稳定。
-    """
-    if not draft or not draft.strip():
-        return []
-    sections: list[tuple[str, str, str]] = []
-    cur_title: str | None = None
-    cur_body: list[str] = []
-
-    def _flush() -> None:
-        if cur_title is None:
-            return
-        content = "\n".join(cur_body).strip()
-        sections.append((f"sec_{len(sections)}", cur_title, content))
-
-    for line in draft.splitlines():
-        m = _HEADING.match(line.strip())
-        if m:
-            _flush()
-            cur_title = (m.group("md_title") or m.group("tex_title") or "").strip()
-            cur_body = []
-        else:
-            cur_body.append(line)
-    _flush()
-
-    if not sections:
-        # 无标题：整篇作为一个章节保留，避免初稿被丢弃。
-        return [("sec_0", "正文", draft.strip())]
-    return sections
+            return len(PdfReader(path).pages)
+        except Exception:
+            return None

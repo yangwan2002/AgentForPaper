@@ -46,7 +46,12 @@ from paper_agent.entry import (  # noqa: E402
     default_output_format,
     looks_like_draft,
 )
-from paper_agent.ingestion import DocumentLoadError, load_document  # noqa: E402
+from paper_agent.ingestion import (  # noqa: E402
+    DocumentLoadError,
+    IngestionConfirmationRequired,
+    load_document,
+    load_document_with_quality,
+)
 from paper_agent.ingestion.artifact_loader import (  # noqa: E402
     ArtifactLoadError,
     load_artifact,
@@ -218,11 +223,11 @@ def _run_docx_inplace(draft_path: str) -> None:
 # 完整管线（.md/.txt/.pdf 初稿 或 主题）
 # ------------------------------------------------------------------ #
 
-def _read_draft(path: str) -> str:
+def _read_draft(path: str, *, confirm: bool = False) -> str:
     base = os.path.splitext(os.path.basename(path))[0]
     asset_dir = os.path.join("output", f"{base}_assets")
     try:
-        return load_document(path, asset_dir=asset_dir)
+        return load_document(path, asset_dir=asset_dir, confirm=confirm)
     except DocumentLoadError as exc:
         raise SystemExit(str(exc))
 
@@ -290,7 +295,10 @@ def _run_pipeline(
                 f"{len(artifact.contributions)} 条贡献）"
             )
         if draft_path:
-            draft = _read_draft(draft_path)
+            draft = _read_draft(
+                draft_path,
+                confirm=bool(getattr(args, "confirm_ingestion", False)),
+            )
             # 记录输入路径到 profile，供 orchestrator 澄清阶段检测「输出格式与输入
             # 不一致」缺口（.tex 输入却选 docx 输出 → 提示会丢 LaTeX 结构）。
             profile["input_path"] = os.path.abspath(draft_path)
@@ -408,6 +416,7 @@ def _run_agent_platform(args, draft_path, topic, interactive) -> None:
             topic_background=topic,
             artifact=artifact,
             profile=profile,
+            confirm_ingestion=bool(getattr(args, "confirm_ingestion", False)),
         )
         print(f"[智能体模式] 任务：{args.task}")
         result = app.run_task(task)
@@ -432,6 +441,7 @@ def main(argv=None) -> None:
 
     interactive = not args.yes
     draft_path, topic = _classify_input(args)
+    args.confirm_ingestion = _confirm_draft_ingestion(draft_path, interactive)
 
     # 智能体平台模式：给了 --task 即启用自然语言任务驱动（Req 1）。
     if args.task:
@@ -464,6 +474,32 @@ def main(argv=None) -> None:
         return
 
     _run_pipeline(args, draft_path, topic, interactive)
+
+
+def _confirm_draft_ingestion(
+    draft_path: str | None, interactive: bool
+) -> bool:
+    """在装配或调用任何 LLM 前完成摄入质量门，并处理边缘结构确认。"""
+    if not draft_path:
+        return False
+    try:
+        _text, report = load_document_with_quality(draft_path)
+    except IngestionConfirmationRequired as exc:
+        print("[摄入质量] 文档正文可读，但需要确认后才能继续：")
+        for warning in exc.report.warnings:
+            print(f"  - {warning}")
+        if not interactive:
+            raise SystemExit(
+                "非交互模式拒绝需要确认的文档；请交互运行并明确确认。"
+            )
+        answer = input("是否仍要继续处理该文档？[y/N] ").strip().lower()
+        if answer not in {"y", "yes", "是", "确认", "继续"}:
+            raise SystemExit("用户未确认，已停止。")
+        print("[摄入质量] 用户已确认继续。")
+        return True
+    except DocumentLoadError as exc:
+        raise SystemExit(str(exc))
+    return report.confirmation_required
 
 
 if __name__ == "__main__":

@@ -123,3 +123,24 @@ def test_inputs_are_isolated_swap_changes_only_that_slot():
     assert CLAIM_SENTINEL in swapped
     assert REFERENCE_META_SENTINEL in swapped
     assert base != swapped
+
+
+def test_deep_review_prompt_is_independent_strict_and_grounding_only():
+    msgs = templates.deep_review_citation_faithfulness(
+        claim=CLAIM_SENTINEL,
+        grounding=GROUNDING_SENTINEL,
+        reference_meta=REFERENCE_META_SENTINEL,
+    )
+
+    assert len(msgs) == 2
+    assert msgs[0].content != FAITHFULNESS_JUDGE_SYSTEM
+    rendered = "\n".join(message.content for message in msgs)
+    assert "独立" in rendered
+    assert "只能使用" in rendered
+    assert "grounding" in rendered
+    assert "cannot_verify" in rendered
+    assert "weak_support" not in msgs[-1].content
+    assert CLAIM_SENTINEL in rendered
+    assert GROUNDING_SENTINEL in rendered
+    assert REFERENCE_META_SENTINEL in rendered
+    assert NOT_PASSED_SENTINEL not in rendered

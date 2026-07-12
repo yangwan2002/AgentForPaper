@@ -329,6 +329,33 @@ def test_reviewer_llm_override_returns_independent_provider():
     assert provider is not writer_provider
 
 
+def test_reviewer_independence_requires_a_different_effective_model():
+    from paper_agent.providers.factory import reviewer_model_is_diverse
+
+    same = Config(
+        llm_provider="openai",
+        llm_model="model-a",
+        reviewer_llm_provider="openai",
+        reviewer_llm_model="model-a",
+    )
+    different = Config(
+        llm_provider="openai",
+        llm_model="model-a",
+        reviewer_llm_provider="openai",
+        reviewer_llm_model="model-b",
+    )
+    assert reviewer_model_is_diverse(same) is False
+    assert reviewer_model_is_diverse(different) is True
+    assert reviewer_model_is_diverse(
+        Config(
+            llm_provider="openai",
+            llm_model="model-a",
+            reviewer_llm_provider="mock",
+            reviewer_llm_model="mock-reviewer",
+        )
+    ) is False
+
+
 def test_full_assembly_with_mock_runs_end_to_end(tmp_path):
     """默认装配（含对抗审）在 mock 下仍能跑到终止 + 导出。"""
     orch = build_from_config(

@@ -96,7 +96,8 @@ def test_split_draft_markdown_headings():
 def test_split_draft_latex_headings():
     draft = "\\section{Intro}\ntext here\n\\subsection{Details}\nmore"
     sections = split_draft_into_sections(draft)
-    assert [s[1] for s in sections] == ["Intro", "Details"]
+    assert [s[1] for s in sections] == ["Intro"]
+    assert "\\subsection{Details}\nmore" in sections[0][2]
 
 
 def test_split_draft_no_headings_keeps_full_draft():

@@ -20,11 +20,14 @@ grounding 组装 / 判定 / 报告，收敛为单条 mutation 写入工作区。
 
 from __future__ import annotations
 
+import hashlib
+import time
+
 from paper_agent.agents.base import Agent, AgentContext, AgentResult
 from paper_agent.observability.events import Event, EventKind, EventSink
 from paper_agent.parsing.structured_parser import StructuredParser
 from paper_agent.prompts import templates
-from paper_agent.tools.faithfulness_extract import extract_pairs
+from paper_agent.tools.faithfulness_extract import extract_pairs, prepare_claim_text
 from paper_agent.tools.faithfulness_grounding import assemble_grounding
 from paper_agent.workspace.faithfulness import (
     CitationFaithfulnessFinding,
@@ -120,6 +123,107 @@ class FaithfulnessJudge:
             outcome.status,
         )
 
+    def judge_batch(
+        self, items: list[dict]
+    ) -> list[tuple[FaithfulnessVerdict, str, str, ParseStatus]]:
+        """Judge an isolated batch in one call; fail closed per missing item."""
+        messages = templates.judge_citation_faithfulness_batch(items)
+        try:
+            outcome = self._parser.request_json(
+                messages, required_keys=("results",)
+            )
+        except Exception as exc:  # noqa: BLE001
+            return [
+                (
+                    FaithfulnessVerdict.CANNOT_VERIFY,
+                    f"batch_judge_error: {type(exc).__name__}",
+                    "",
+                    ParseStatus.FAILED,
+                )
+                for _ in items
+            ]
+        if outcome.status is not ParseStatus.PARSED:
+            return [
+                (
+                    FaithfulnessVerdict.CANNOT_VERIFY,
+                    f"batch_parse_{outcome.status.value}: {outcome.reason}",
+                    "",
+                    outcome.status,
+                )
+                for _ in items
+            ]
+        rows = outcome.data.get("results") if outcome.data else None
+        by_id = {
+            str(row.get("id")): row
+            for row in (rows or [])
+            if isinstance(row, dict)
+        }
+        results = []
+        for item in items:
+            row = by_id.get(str(item["id"]))
+            if row is None:
+                results.append(
+                    (
+                        FaithfulnessVerdict.CANNOT_VERIFY,
+                        "batch_result_missing",
+                        "",
+                        ParseStatus.FAILED,
+                    )
+                )
+                continue
+            results.append(
+                (
+                    FaithfulnessVerdict(row.get("verdict")),
+                    str(row.get("rationale", "")),
+                    str(row.get("supporting_snippet", "")),
+                    ParseStatus.PARSED,
+                )
+            )
+        return results
+
+    def deep_review(
+        self, *, claim: str, grounding: str, reference_meta: str
+    ) -> tuple[FaithfulnessVerdict, str, str, ParseStatus]:
+        """Strictly re-review one weak result; every uncertain path fails closed."""
+        messages = templates.deep_review_citation_faithfulness(
+            claim=claim, grounding=grounding, reference_meta=reference_meta
+        )
+        try:
+            outcome = self._parser.request_json(
+                messages, required_keys=("verdict",)
+            )
+        except Exception as exc:  # noqa: BLE001 - budget/provider failures are isolated
+            return (
+                FaithfulnessVerdict.CANNOT_VERIFY,
+                f"deep_review_error: {type(exc).__name__}",
+                "",
+                ParseStatus.FAILED,
+            )
+        if outcome.status is not ParseStatus.PARSED:
+            return (
+                FaithfulnessVerdict.CANNOT_VERIFY,
+                f"deep_review_parse_{outcome.status.value}: {outcome.reason}",
+                "",
+                outcome.status,
+            )
+        data = outcome.data or {}
+        verdict = FaithfulnessVerdict(data.get("verdict"))
+        # A strict review must resolve weak support. Malformed/ambiguous output
+        # cannot preserve the optimistic intermediate verdict.
+        if verdict is FaithfulnessVerdict.WEAK_SUPPORT:
+            return (
+                FaithfulnessVerdict.CANNOT_VERIFY,
+                "deep_review_unresolved_weak_support",
+                "",
+                ParseStatus.FAILED,
+            )
+        return (
+            verdict,
+            str(data.get("rationale", "")),
+            str(data.get("supporting_snippet", "")),
+            ParseStatus.PARSED,
+        )
+
 
 def _truncate(text: str, limit: int) -> str:
     """防御式截断纯字符串（治理未知/超长文本，绝不 eval/exec，Req 7.3）。"""
@@ -152,6 +256,8 @@ class CitationFaithfulnessAgent(Agent):
         *,
         min_grounding_chars: int,
         token_budget: int,
+        max_claims: int = 0,
+        deadline_s: float = 0.0,
         is_mock: bool = False,
         sink: EventSink | None = None,
     ) -> None:
@@ -159,18 +265,42 @@ class CitationFaithfulnessAgent(Agent):
         self._judge = judge
         self._min_grounding_chars = min_grounding_chars
         self._token_budget = token_budget
+        self._max_claims = max(0, int(max_claims or 0))
+        self._deadline_s = max(0.0, float(deadline_s or 0.0))
         self._is_mock = is_mock
         # sink 为 None 时静默跳过观测（无可观测开销，保持向后兼容）。
         self._sink = sink
+        # agent 生命周期内共享：同轮重复声明及反馈轮未变化声明均直接复用。
+        self._cache: dict[
+            str, tuple[FaithfulnessVerdict, str, str, str]
+        ] = {}
+        # Deep-review cache is intentionally keyed by the exact inputs used by
+        # the stricter grounding-only prompt, independently of the outer cache.
+        self._deep_cache: dict[
+            str, tuple[FaithfulnessVerdict, str, str, ParseStatus]
+        ] = {}
 
     def run(self, ctx: AgentContext) -> AgentResult:
         ws = ctx.workspace
         logs: list[str] = []
         findings: list[CitationFaithfulnessFinding] = []
+        started_at = time.monotonic()
+        judged_claims = 0
+        cache_hits = 0
+        deep_review_calls = 0
+        deep_cache_hits = 0
+        pending: list[dict] = []
+        pending_by_key: dict[str, dict] = {}
 
         verified_ids = ws.verified_reference_ids()
         # id -> ReferenceEntry 索引，供 grounding 组装快速查表。
-        ref_by_id = {r.id: r for r in ws.verified_references}
+        ref_by_id = {}
+        for reference in ws.verified_references:
+            ref_by_id[reference.id] = reference
+            if reference.source_id:
+                ref_by_id[reference.source_id] = reference
+            for alias in reference.citation_aliases:
+                ref_by_id[alias] = reference
 
         section_count = len(ws.section_drafts)
         self._emit(
@@ -180,7 +310,10 @@ class CitationFaithfulnessAgent(Agent):
         for section_id, draft in ws.section_drafts.items():
             content = getattr(draft, "content", "") or ""
             verified_pairs, unverified_pairs = extract_pairs(
-                section_id, content, verified_ids
+                section_id,
+                prepare_claim_text(content),
+                verified_ids,
+                scope_to_citation=True,
             )
 
             # 未验证引用：直接成 cannot_verify，不调判定器（Req 1.5）。
@@ -198,7 +331,230 @@ class CitationFaithfulnessAgent(Agent):
 
             # 已验证引用：组装 grounding → 充足性短路 → 判定。逐对异常隔离（Req 7.6）。
             for pair in verified_pairs:
-                findings.append(self._judge_pair(pair, ref_by_id))
+                cache_key = self._cache_key(pair, ref_by_id.get(pair.cited_reference_id))
+                cached = self._cache.get(cache_key)
+                if cached is not None:
+                    verdict, rationale, snippet, parse_status = cached
+                    findings.append(
+                        self._finding(
+                            pair,
+                            verdict=verdict,
+                            rationale=rationale,
+                            supporting_snippet=snippet,
+                            parse_status=parse_status,
+                        )
+                    )
+                    cache_hits += 1
+                    continue
+                if cache_key in pending_by_key:
+                    pending_by_key[cache_key]["duplicates"].append(pair)
+                    cache_hits += 1
+                    continue
+                deadline_hit = (
+                    self._deadline_s > 0
+                    and time.monotonic() - started_at >= self._deadline_s
+                )
+                cap_hit = (
+                    self._max_claims > 0
+                    and judged_claims + len(pending) >= self._max_claims
+                )
+                if deadline_hit or cap_hit:
+                    findings.append(
+                        self._finding(
+                            pair,
+                            verdict=FaithfulnessVerdict.CANNOT_VERIFY,
+                            rationale=(
+                                "faithfulness_deadline_reached"
+                                if deadline_hit
+                                else "faithfulness_max_claims_reached"
+                            ),
+                            supporting_snippet="",
+                            parse_status="n/a",
+                        )
+                    )
+                    continue
+                try:
+                    ref = ref_by_id.get(pair.cited_reference_id)
+                    if ref is None:
+                        findings.append(
+                            self._finding(
+                                pair,
+                                verdict=FaithfulnessVerdict.CANNOT_VERIFY,
+                                rationale="未在已验证文献库中找到对应文献记录",
+                                supporting_snippet="",
+                                parse_status="n/a",
+                            )
+                        )
+                        continue
+                    grounding = assemble_grounding(
+                        ref, token_budget=self._token_budget
+                    )
+                    if (
+                        not grounding.strip()
+                        or len(grounding) < self._min_grounding_chars
+                    ):
+                        findings.append(
+                            self._finding(
+                                pair,
+                                verdict=FaithfulnessVerdict.CANNOT_VERIFY,
+                                rationale="grounding 文本不足（为空或低于最小字符阈值）",
+                                supporting_snippet="",
+                                parse_status="n/a",
+                            )
+                        )
+                        continue
+                    item = {
+                        "pair": pair,
+                        "duplicates": [],
+                        "cache_key": cache_key,
+                        "claim": _truncate(
+                            pair.claim_sentence, self._token_budget
+                        ),
+                        "grounding": grounding,
+                        "reference_meta": self._reference_meta(ref),
+                    }
+                    pending.append(item)
+                    pending_by_key[cache_key] = item
+                except Exception as exc:  # noqa: BLE001
+                    findings.append(
+                        self._finding(
+                            pair,
+                            verdict=FaithfulnessVerdict.CANNOT_VERIFY,
+                            rationale=f"pair_prepare_error: {type(exc).__name__}",
+                            supporting_snippet="",
+                            parse_status="n/a",
+                        )
+                    )
+
+        # Batch only the claims that survived deterministic short-circuits.
+        # Twelve keeps the payload bounded and falls within the planned 8–16 range.
+        batch_size = 12
+        for start in range(0, len(pending), batch_size):
+            batch = pending[start : start + batch_size]
+            if (
+                self._deadline_s > 0
+                and time.monotonic() - started_at >= self._deadline_s
+            ):
+                for item in batch:
+                    for pair in [item["pair"], *item["duplicates"]]:
+                        findings.append(
+                            self._finding(
+                                pair,
+                                verdict=FaithfulnessVerdict.CANNOT_VERIFY,
+                                rationale="faithfulness_deadline_reached",
+                                supporting_snippet="",
+                                parse_status="n/a",
+                            )
+                        )
+                continue
+            judge_inputs = [
+                {
+                    "id": str(index),
+                    "claim": item["claim"],
+                    "grounding": item["grounding"],
+                    "reference_meta": item["reference_meta"],
+                }
+                for index, item in enumerate(batch)
+            ]
+            def safe_judge(item):
+                try:
+                    return self._judge.judge(
+                        claim=item["claim"],
+                        grounding=item["grounding"],
+                        reference_meta=item["reference_meta"],
+                    )
+                except Exception as exc:  # noqa: BLE001 - 单对异常隔离
+                    return (
+                        FaithfulnessVerdict.CANNOT_VERIFY,
+                        f"pair_error: {type(exc).__name__}",
+                        "",
+                        ParseStatus.FAILED,
+                    )
+
+            batch_judged = False
+            if len(batch) >= 8 and hasattr(self._judge, "judge_batch"):
+                try:
+                    verdicts = list(self._judge.judge_batch(judge_inputs))
+                    batch_judged = True
+                except Exception:  # noqa: BLE001 - 批接口不兼容则逐对降级
+                    verdicts = [safe_judge(item) for item in batch]
+            else:
+                verdicts = [safe_judge(item) for item in batch]
+            # 批返回缺项时逐对补齐，保证报告仍与抽取对一一对应。
+            if len(verdicts) < len(batch):
+                verdicts.extend(
+                    safe_judge(item) for item in batch[len(verdicts) :]
+                )
+            for item, (verdict, rationale, snippet, status) in zip(batch, verdicts):
+                # Third audit level: only the batch judge's weak results receive
+                # one independent, stricter, grounding-only review.
+                if (
+                    batch_judged
+                    and verdict is FaithfulnessVerdict.WEAK_SUPPORT
+                ):
+                    deep_key = self._deep_cache_key(
+                        claim=item["claim"],
+                        reference_id=item["pair"].cited_reference_id,
+                        grounding=item["grounding"],
+                    )
+                    deep_cached = self._deep_cache.get(deep_key)
+                    if deep_cached is not None:
+                        verdict, rationale, snippet, status = deep_cached
+                        deep_cache_hits += 1
+                    elif (
+                        self._deadline_s > 0
+                        and time.monotonic() - started_at >= self._deadline_s
+                    ):
+                        verdict = FaithfulnessVerdict.CANNOT_VERIFY
+                        rationale = "faithfulness_deadline_reached_before_deep_review"
+                        snippet = ""
+                        status = ParseStatus.FAILED
+                    else:
+                        try:
+                            verdict, rationale, snippet, status = (
+                                self._judge.deep_review(
+                                    claim=item["claim"],
+                                    grounding=item["grounding"],
+                                    reference_meta=item["reference_meta"],
+                                )
+                            )
+                        except Exception as exc:  # noqa: BLE001 - isolate each weak item
+                            verdict = FaithfulnessVerdict.CANNOT_VERIFY
+                            rationale = f"deep_review_pair_error: {type(exc).__name__}"
+                            snippet = ""
+                            status = ParseStatus.FAILED
+                        deep_review_calls += 1
+                        self._deep_cache[deep_key] = (
+                            verdict,
+                            rationale,
+                            snippet,
+                            status,
+                        )
+                finding = self._finding(
+                    item["pair"],
+                    verdict=verdict,
+                    rationale=rationale,
+                    supporting_snippet=snippet,
+                    parse_status=status.value,
+                )
+                findings.append(finding)
+                for duplicate in item["duplicates"]:
+                    findings.append(
+                        self._finding(
+                            duplicate,
+                            verdict=verdict,
+                            rationale=rationale,
+                            supporting_snippet=snippet,
+                            parse_status=status.value,
+                        )
+                    )
+                judged_claims += 1
+                self._cache[item["cache_key"]] = (
+                    finding.verdict,
+                    finding.rationale,
+                    finding.supporting_snippet,
+                    finding.parse_status,
+                )
 
         report = [f.to_dict() for f in findings]
 
@@ -210,7 +566,9 @@ class CitationFaithfulnessAgent(Agent):
         cannot = sum(1 for f in findings if f.verdict is FaithfulnessVerdict.CANNOT_VERIFY)
         summary = (
             f"忠实性审计完成：发现 {len(findings)} 条"
-            f"（unsupported={unsupported}, cannot_verify={cannot}）"
+            f"（unsupported={unsupported}, cannot_verify={cannot}, "
+            f"新判定={judged_claims}, 缓存命中={cache_hits}, "
+            f"深审调用={deep_review_calls}, 深审缓存命中={deep_cache_hits}）"
         )
         logs.append(summary)
         self._emit(summary)
@@ -220,7 +578,7 @@ class CitationFaithfulnessAgent(Agent):
         self,
         pair: ClaimCitationPair,
         ref_by_id: dict[str, ReferenceEntry],
-    ) -> CitationFaithfulnessFinding:
+    ) -> tuple[CitationFaithfulnessFinding, bool]:
         """组装 grounding 并判定单个已验证对；全程异常隔离（Req 7.6）。"""
         try:
             ref = ref_by_id.get(pair.cited_reference_id)
@@ -232,7 +590,7 @@ class CitationFaithfulnessAgent(Agent):
                     rationale="未在已验证文献库中找到对应文献记录",
                     supporting_snippet="",
                     parse_status="n/a",
-                )
+                ), False
 
             grounding = assemble_grounding(ref, token_budget=self._token_budget)
             # grounding 不足前置短路：不调判定器（Req 2.5）。
@@ -243,7 +601,7 @@ class CitationFaithfulnessAgent(Agent):
                     rationale="grounding 文本不足（为空或低于最小字符阈值）",
                     supporting_snippet="",
                     parse_status="n/a",
-                )
+                ), False
 
             # 防御式截断：喂入判定器的 claim 亦受 token_budget 上限（Req 2.6 / 7.4）。
             claim = _truncate(pair.claim_sentence, self._token_budget)
@@ -257,7 +615,7 @@ class CitationFaithfulnessAgent(Agent):
                 rationale=rationale,
                 supporting_snippet=supporting_snippet,
                 parse_status=parse_status.value,
-            )
+            ), True
         except Exception as exc:  # noqa: BLE001 - 单对异常绝不冒泡中止整次审计
             reason = f"pair_error: {type(exc).__name__}: {exc}"
             self._emit(f"单对判定异常，降级 cannot_verify：{_truncate(reason, _OBS_SNIPPET_MAX)}")
@@ -267,7 +625,27 @@ class CitationFaithfulnessAgent(Agent):
                 rationale=_truncate(reason, _CLAIM_EXCERPT_MAX),
                 supporting_snippet="",
                 parse_status="n/a",
+            ), True
+
+    @staticmethod
+    def _cache_key(pair: ClaimCitationPair, ref: ReferenceEntry | None) -> str:
+        """缓存键包含声明与 grounding 来源，文献内容变化会自然失效。"""
+        material = "\x1f".join(
+            (
+                pair.claim_sentence.strip(),
+                pair.cited_reference_id,
+                getattr(ref, "title", "") or "",
+                getattr(ref, "abstract", "") or "",
+                getattr(ref, "full_text", "") or "",
             )
+        )
+        return hashlib.sha256(material.encode("utf-8")).hexdigest()
+
+    @staticmethod
+    def _deep_cache_key(*, claim: str, reference_id: str, grounding: str) -> str:
+        """Hash the exact claim + reference + grounding deep-review inputs."""
+        material = "\x1f".join((claim.strip(), reference_id, grounding))
+        return hashlib.sha256(material.encode("utf-8")).hexdigest()
 
     def _finding(
         self,

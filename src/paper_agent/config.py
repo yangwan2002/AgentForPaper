@@ -37,6 +37,11 @@ class Config:
     # 全局输出 token 预算上限（#19）：UsageTracker 累计超出后编排器降级（跳过
     # 进一步修订轮，直接进入导出），防止失控耗费。0 表示不限。
     total_token_budget: int = 0
+    # 全局 LLM 调用次数硬上限；0 表示不限。与 token/墙钟预算共享一次 run 上下文。
+    total_llm_call_budget: int = 0
+    # 每次模型调用在 prompt 之外预留的最大输出 token；provider 未显式传
+    # max_tokens 时仍据此做硬预算预检，避免 completion 在单次调用内穿透总预算。
+    llm_completion_token_reserve: int = 4096
     # 全局墙钟超时（秒）：反馈循环每轮开始时检查，超出即降级终止并直接导出，
     # 防止异常场景无限跑烧 token/时间。0 表示不限（库默认不限以兼容测试；
     # 生产入口应设非 0，见 scripts/run_real.py）。
@@ -140,6 +145,10 @@ class Config:
     reviewer_llm_model: str = ""
     reviewer_llm_base_url: str | None = None
     reviewer_llm_api_key_env: str | None = None
+    # Accuracy-first default: a second provider instance is not independent if it
+    # resolves to the same model.  Production assembly therefore requires an
+    # explicit, different reviewer model (Mock tests are exempt).
+    require_reviewer_model_diversity: bool = True
 
     # 对抗式评审开关 & 最少 weakness 条数。
     adversarial_review_enabled: bool = True

@@ -69,6 +69,10 @@ class OutlineNode:
     title: str
     order: int
     summary_hint: str = ""  # 该章节应涵盖内容的提示
+    # Artifact evidence that this section must/ may consume.  Empty lists preserve
+    # compatibility with revision projects that do not have a ResearchArtifact.
+    required_evidence_ids: list[str] = field(default_factory=list)
+    allowed_evidence_ids: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -108,6 +112,9 @@ class ReferenceEntry:
     abstract: str = ""
     pdf_url: str = ""
     abstract_sections: dict[str, str] = field(default_factory=dict)
+    # Citation markers used by an imported source document (for example "8").
+    # They are aliases of this verified record, not globally stable identifiers.
+    citation_aliases: list[str] = field(default_factory=list)
     # Round 9：被引论文的**正文全文**（可选）。默认空——为空时 grounding 仍只到
     # abstract 层（行为不变）；非空时引用忠实性审计的 grounding 会从正文按段落取材，
     # 消解「细节声明在正文、abstract 里没有 → 被迫 cannot_verify」的假阴。
@@ -128,6 +135,10 @@ class SectionDraft:
     title: str
     content: str = ""
     cited_reference_ids: list[str] = field(default_factory=list)
+    artifact_hash: str = ""
+    evidence_ids: list[str] = field(default_factory=list)
+    # Each item is ``{"claim": str, "evidence_ids": [str], "kind": str}``.
+    claim_manifest: list[dict] = field(default_factory=list)
 
 
 @dataclass
@@ -253,6 +264,9 @@ class PaperWorkspace:
     iteration: int = 0
     citation_audit: list[dict] = field(default_factory=list)  # 引用审计发现（Req 11）
     quality_report: list[dict] = field(default_factory=list)  # 确定性质量检查发现
+    # Candidate sections rejected by ArtifactCommitGate.  Keeping this separate
+    # from section_drafts guarantees that rejected facts can never be exported.
+    artifact_violations: list[dict] = field(default_factory=list)
     # 引用忠实性审计报告（citation-faithfulness-audit Req 5.3/5.4）：每条 finding 一个 dict。
     citation_faithfulness: list[dict] = field(default_factory=list)
     # 检索阶段是否已完成（#8）：用此标志而非「库里是否有文献」判定，避免审计
@@ -269,7 +283,15 @@ class PaperWorkspace:
 
     def verified_reference_ids(self) -> set[str]:
         """返回所有已验证文献的 id 集合。"""
-        return {r.id for r in self.verified_references if r.verified}
+        ids: set[str] = set()
+        for reference in self.verified_references:
+            if not reference.verified:
+                continue
+            ids.add(reference.id)
+            if reference.source_id:
+                ids.add(reference.source_id)
+            ids.update(reference.citation_aliases)
+        return ids
 
     def ordered_sections(self) -> list[OutlineNode]:
         """按 order 返回大纲章节。"""
@@ -321,6 +343,7 @@ class PaperWorkspace:
             "iteration": self.iteration,
             "citation_audit": list(self.citation_audit),
             "quality_report": list(self.quality_report),
+            "artifact_violations": list(self.artifact_violations),
             "citation_faithfulness": list(self.citation_faithfulness),
             "retrieval_completed": self.retrieval_completed,
             "profile": dict(self.profile),
@@ -406,6 +429,7 @@ class PaperWorkspace:
             iteration=data.get("iteration", 0),
             citation_audit=list(data.get("citation_audit", [])),
             quality_report=list(data.get("quality_report", [])),
+            artifact_violations=list(data.get("artifact_violations", [])),
             citation_faithfulness=list(data.get("citation_faithfulness", [])),
             retrieval_completed=bool(data.get("retrieval_completed", False)),
             profile=dict(data.get("profile", {})),

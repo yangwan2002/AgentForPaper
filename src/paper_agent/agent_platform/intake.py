@@ -102,8 +102,12 @@ class TaskIntake:
         """
         sections = None
         draft_text = None
+        ingestion_quality = None
         if task.draft_path:
-            draft_text, sections = self._load_sections(task.draft_path)
+            draft_text, sections, ingestion_quality = self._load_sections(
+                task.draft_path,
+                confirm=task.confirm_ingestion,
+            )
 
         if draft_text:
             mode = InputMode.DRAFT_REVISION
@@ -136,21 +140,35 @@ class TaskIntake:
             ws.profile = dict(task.profile)
         if task.draft_path:
             ws.profile["input_path"] = os.path.abspath(task.draft_path)
+        if ingestion_quality is not None:
+            ws.profile["ingestion_quality"] = ingestion_quality
         if task.artifact is not None:
             ws.artifact = task.artifact
         return self._repo.create(ws)
 
-    def _load_sections(self, path: str):
+    def _load_sections(self, path: str, *, confirm: bool = False):
         """加载初稿并切分章节；加载失败以 InputValidationError 明确报错。"""
         if self._draft_loader is not None:
             # 注入的加载器（测试用）：只给全文，单章节承载。
             text = self._draft_loader(path)
-            return text, [("sec_0", "正文", text)] if text else (text, [])
-        from paper_agent.agent_platform.tools.import_draft import load_sections
-        from paper_agent.ingestion import DocumentLoadError
+            sections = [("sec_0", "正文", text)] if text else []
+            return text, sections, None
+        from paper_agent.ingestion import (
+            DocumentLoadError,
+            IngestionConfirmationRequired,
+            ingest_document,
+        )
 
         try:
-            return load_sections(path)
+            ingested = ingest_document(path, confirm=confirm)
+            return (
+                ingested.text,
+                ingested.sections,
+                ingested.quality.to_profile(),
+            )
+        except IngestionConfirmationRequired:
+            # 保留带 report/path 的结构化异常，供 API/CLI 以可恢复方式请求确认。
+            raise
         except DocumentLoadError as exc:
             raise InputValidationError(f"读取初稿失败：{exc}")
 

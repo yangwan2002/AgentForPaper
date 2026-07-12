@@ -7,7 +7,14 @@ from paper_agent.agents.citation_audit_agent import CitationAuditAgent
 from paper_agent.providers.retrieval.base import RetrievalProvider
 from paper_agent.tools.citation import CitationVerifier
 from paper_agent.tools.citation_parser import CitationParser
-from paper_agent.workspace.models import InputMode, PaperWorkspace, ReferenceEntry
+from paper_agent.tools.quality_gate import QualityGate
+from paper_agent.workspace.models import (
+    InputMode,
+    OutlineNode,
+    PaperWorkspace,
+    ReferenceEntry,
+    SectionDraft,
+)
 
 
 def test_parse_in_text_citations():
@@ -78,6 +85,19 @@ def test_audit_flags_nonexistent_and_year_mismatch():
     assert "existence" in types    # 虚构文献
     # 真实文献已入库供后续引用。
     assert any(r.verified for r in ws.verified_references)
+    assert "1" in ws.verified_reference_ids()
+    assert "2" not in ws.verified_reference_ids()
+
+    ws.outline = [OutlineNode(section_id="s", title="正文", order=0)]
+    ws.draft_sections["s"] = draft
+    ws.section_drafts["s"] = SectionDraft(
+        section_id="s", title="正文", content=draft
+    )
+    issues = QualityGate(min_section_chars=1).check(ws).issues
+    assert not any(issue["type"] == "text_citation_invalid" for issue in issues)
+    assert sum(
+        issue["type"] == "source_citation_unverified" for issue in issues
+    ) == 1
 
 
 def test_audit_detects_dangling_citation():

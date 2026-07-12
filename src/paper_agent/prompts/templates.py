@@ -12,6 +12,8 @@
 
 from __future__ import annotations
 
+import json
+
 from paper_agent.providers.llm.base import Message
 
 # --- 稳定的 system 提示（含规范，放最前以利缓存） ---
@@ -155,7 +157,11 @@ def figure_caption(*, data_ref: str) -> list[Message]:
 # --- 规划 ---
 
 def plan_outline(
-    *, topic_background: str, input_mode: str, draft_excerpt: str = ""
+    *,
+    topic_background: str,
+    input_mode: str,
+    draft_excerpt: str = "",
+    artifact_contract: str = "",
 ) -> list[Message]:
     user = (
         "请基于以下信息规划论文大纲。\n"
@@ -164,10 +170,18 @@ def plan_outline(
     )
     if draft_excerpt:
         user += f"[已有初稿片段]\n{draft_excerpt}\n"
+    if artifact_contract:
+        user += (
+            "[事实契约：只能规划有下列证据支撑的章节]\n"
+            f"{artifact_contract}\n"
+        )
     user += (
         "\n请输出 JSON："
         '{"sections": [{"section_id": "英文短标识", "title": "章节标题", '
-        '"summary_hint": "本章应涵盖的要点", "needs_retrieval": true/false}]}。'
+        '"summary_hint": "本章应涵盖的要点", "needs_retrieval": true/false, '
+        '"required_evidence_ids": ["必须使用的事实证据ID"], '
+        '"allowed_evidence_ids": ["本章允许使用的事实证据ID"]}]}。'
+        "证据ID必须逐字来自事实契约，不得创造方法、实验、数据集或基线。"
         "needs_retrieval 表示该章节是否需要检索外部文献支撑。只输出 JSON。"
     )
     return [Message("system", PLAN_SYSTEM), Message("user", user)]
@@ -176,7 +190,12 @@ def plan_outline(
 # --- 评审 ---
 
 def review_paper(
-    *, paper_text: str, dimensions: list[str], section_rubrics: str = ""
+    *,
+    paper_text: str,
+    dimensions: list[str],
+    section_rubrics: str = "",
+    artifact_contract: str = "",
+    deterministic_report: str = "",
 ) -> list[Message]:
     dim_desc = (
         "- logic（逻辑性）：论证链条是否清晰、连贯\n"
@@ -195,6 +214,18 @@ def review_paper(
         f"请对以下论文按这些维度（{dim_keys}）各打 0-10 分（可含小数），并给出修订建议。\n"
         f"维度说明：\n{dim_desc}\n"
         f"{rubric_block}\n"
+        + (
+            f"[用户事实契约：正文不得偏离]\n{artifact_contract}\n"
+            if artifact_contract
+            else ""
+        )
+        + (
+            f"[确定性偏差报告：high 项必须导致 sufficiency 不通过]\n"
+            f"{deterministic_report}\n"
+            if deterministic_report
+            else ""
+        )
+        +
         f"[论文内容]\n{paper_text}\n\n"
         "请严格输出如下 JSON（键名必须用上面的英文维度键）：\n"
         '{"scores": {"logic": 0-10, "novelty": 0-10, "sufficiency": 0-10, '
@@ -318,6 +349,55 @@ def judge_citation_faithfulness(
         '"supporting_snippet": "grounding 中的片段或空"}'
     )
     return [Message("system", FAITHFULNESS_JUDGE_SYSTEM), Message("user", user)]
+
+
+def judge_citation_faithfulness_batch(items: list[dict]) -> list[Message]:
+    """Judge 8–16 isolated claim/grounding records in one provider call."""
+    payload = json.dumps(items, ensure_ascii=False)
+    user = (
+        "请逐项判断下列引用声明。每项相互独立，只能使用该项自己的 grounding，"
+        "不得跨项共享依据。输出 results 必须与输入 id 一一对应。\n\n"
+        f"【批量输入】\n{payload}\n\n"
+        "请严格输出 JSON："
+        '{"results":[{"id":"输入id",'
+        '"verdict":"supported|weak_support|unsupported|cannot_verify",'
+        '"rationale":"简短理由","supporting_snippet":"该项grounding片段或空"}]}'
+    )
+    return [Message("system", FAITHFULNESS_JUDGE_SYSTEM), Message("user", user)]
+
+
+FAITHFULNESS_DEEP_REVIEW_SYSTEM = (
+    "你是引用忠实性的严格复核员。此前的批量判定只能确认该声明可能获得弱支撑；"
+    "你必须从零开始独立复核，不能采纳、推断或延续此前判定。\n"
+    "硬约束：\n"
+    "- 只能使用本次提供的 grounding 文本，严禁使用模型知识、记忆、其它条目或"
+    "此前判定；\n"
+    "- supported 仅适用于 grounding 明确、直接且完整支持声明全部实质性内容；\n"
+    "- grounding 明确反驳声明时选 unsupported；证据不完整、含糊、仅间接相关或"
+    "无法确定时一律选 cannot_verify；\n"
+    "- 仅输出要求的 JSON，不要附加说明。"
+)
+
+
+def deep_review_citation_faithfulness(
+    *, claim: str, grounding: str, reference_meta: str
+) -> list[Message]:
+    """Independently re-review one weak result using grounding only."""
+    user = (
+        "请独立严格复核下面的单条声明。不要参考任何先前结论；只依据该条 grounding。"
+        "若 grounding 未直接完整支撑声明的全部实质内容，必须选择 cannot_verify。\n\n"
+        f"【被引文献元信息】\n{reference_meta}\n\n"
+        f"【声明句（claim）】\n{claim}\n\n"
+        f"【grounding 文本】\n{grounding}\n\n"
+        "请严格输出如下 JSON（不要附加任何说明）：\n"
+        '{"verdict": "supported|unsupported|cannot_verify", '
+        '"rationale": "简短理由", '
+        '"supporting_snippet": "grounding 中的直接证据片段或空"}'
+    )
+    return [
+        Message("system", FAITHFULNESS_DEEP_REVIEW_SYSTEM),
+        Message("user", user),
+    ]
 
 
 # --- 语言润色 / 一致性校对（language polish & consistency） ---
