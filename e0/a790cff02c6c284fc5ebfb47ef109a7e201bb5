@@ -1,0 +1,313 @@
+src/paper_agent/agent_platform/session_store.py
+  s_a515b24456d149::t_22eeebb8ff8927 52,63
+src/paper_agent/ingestion/sections.py
+  s_577e84e05e5a62::t_e1aca61d410cee 1-26,31-44,46-88,90-125
+  s_9b19e02a147443::t_b8b438094ab25e 27-30
+  s_9b19e02a147443::t_b1f4cffeb935bf 45,89
+src/paper_agent/providers/llm/base.py
+  s_3c6edbfe32ef6b::t_0450c5cfb8dc5f 12-13,90,94,99-125
+tests/test_faithfulness_batching.py
+  s_9b19e02a147443::t_4b6c3d3ee750a7 1-74
+eval/cases/real/generation_with_real_data.json.example
+  s_9b19e02a147443::t_71bc21e9fafa08 1-26
+tests/test_fixes.py
+  s_577e84e05e5a62::t_1b4b75aa7dbc8d 99-100
+src/paper_agent/tools/faithfulness_extract.py
+  s_9b19e02a147443::t_412de5b17257c2 137-138,172-183,185-191
+  s_9b19e02a147443::t_94c8323119568d 24,32-54
+  s_9b19e02a147443::t_9df8081014812d 184
+src/paper_agent/tools/artifact_commit_gate.py
+  s_9b19e02a147443::t_220c3fa13fd891 17,94-97,119,121
+  s_9b19e02a147443::t_149be681a64366 291,294
+  s_9b19e02a147443::t_0c36f95abf547d 196-211,361-381
+  s_9b19e02a147443::t_1a497e97d19529 238,242-246
+  s_9b19e02a147443::t_e481c80cdf41b5 48-64,76-89,93,150,152-154,156,164-192,250-287,300-322,324-360
+  s_9b19e02a147443::t_d9df3dec237164 1-16,18-19,26-47,65-75,98-110,132-149,151,155,157-163,193-195,218,224-237,248-249,288-290,292-293,295-299,323,382-397
+  s_9b19e02a147443::t_935fbf4198a91f 20-25,111-118,120,122-131,212-217,219-223,239-241,247
+  s_9b19e02a147443::t_ba61cae24cbd30 90-92
+src/paper_agent/providers/llm/anthropic_provider.py
+  s_9b19e02a147443::t_dc21a07ec000e4 216-219
+src/paper_agent/agents/citation_audit_agent.py
+  s_9b19e02a147443::t_a6e1d95a393671 33,69,71-79,82-83,90-95
+scripts/run_real.py
+  s_a515b24456d149::t_46b12b7bd9320c 49-54,226,230,298-301,419,444,479-504
+src/paper_agent/workspace/models.py
+  s_9b19e02a147443::t_7ab71688059569 115-117,138-141,267-269,286-294
+src/paper_agent/agent_platform/tools/import_draft.py
+  s_a515b24456d149::t_75d588c0a8a06f 18,36-41,53-55,57,94,102,104-110,140
+  s_577e84e05e5a62::t_1c0b3607ac85a6 19-20,56,58,62-65,88-89,103,117-125,145-150
+src/paper_agent/ingestion/loaders.py
+  s_a515b24456d149::t_effb3e8b155c09 30-41,217-223,228-233,238-242,244,263-265
+  s_577e84e05e5a62::t_8c930dd27ccdb6 19-24,234-237,243,253-262,266,269-272,274-278,280-282
+src/paper_agent/evaluation/__init__.py
+  s_9b19e02a147443::t_a103ab98dff0c4 1-18
+scripts/run_eval.py
+  s_9b19e02a147443::t_028cb470256dff 90,99-100
+  s_9b19e02a147443::t_2daa705dc99cf5 14,68
+  s_9b19e02a147443::t_fae332e91bd7df 1-13,15-36,43-67,69-82,89,91,98,101-104,111-131
+  s_9b19e02a147443::t_49957e51f0df98 37-42,105-110
+  s_9b19e02a147443::t_c76e8ade5c59e8 83-88,92-97
+tests/test_citation_marker_fix.py
+  s_9b19e02a147443::t_1ee510eef2b92e 54-58,60-63
+  s_9b19e02a147443::t_6ea71fe18b7b21 44-48
+  s_9b19e02a147443::t_08e216328103ae 18-26
+  s_9b19e02a147443::t_2ff318190dc214 49-53
+  s_9b19e02a147443::t_21bb224b5c03fd 59
+src/paper_agent/agents/writing_agent.py
+  s_9b19e02a147443::t_84641afd117bbb 335-362,364-419
+  s_9b19e02a147443::t_fa142aa23b9de4 495-499,502
+  s_9b19e02a147443::t_5a234f014ff396 227-231,238-243,260
+  s_9b19e02a147443::t_abeff53faca222 223-226,232-237,244-245,258-259,261
+  s_9b19e02a147443::t_d7060efeabb1e6 1171-1179,1181-1182,1184-1186,1292-1300,1302-1307
+  s_9b19e02a147443::t_d9bca3686e6e0f 16,420,623-637,1180
+  s_9b19e02a147443::t_3c47ed98bdddf3 33-36,156,172-178,252-253,255-257,304-334,363
+  s_9b19e02a147443::t_40ec75803fb7ba 500-501
+src/paper_agent/app.py
+  s_9b19e02a147443::t_95c89eee47fe29 206-218,220
+  s_b051ff25d413d1::t_3596cb83621e43 155-163,165
+  s_b051ff25d413d1::t_5369f38767e3ff 26,35,54-55,60,62-67,110-117,119,223-224
+  s_9b19e02a147443::t_a3f992183635e6 56,68,118,164
+tests/test_ingestion.py
+  s_577e84e05e5a62::t_e952dccc1cc301 88-90
+  s_577e84e05e5a62::t_35582f70dca907 7,9-11,13-15,91-111,142-179
+  s_a515b24456d149::t_848e6c0c28caf3 8,12,112-141
+src/paper_agent/ingestion/quality.py
+  s_577e84e05e5a62::t_38d0a94d2d163c 1-11,13,15-27,29-34,40-55,57-67,69-95,97-102,104-109,115-126,129,132-139,141-145,151-153,155-161
+  s_a515b24456d149::t_7113e9031e7176 12,14,28,36-39,56,68,110-114,127-128,130-131,140,146-150,154
+  s_577e84e05e5a62::t_748e9f54a85dc0 96,103
+eval/README.md
+  s_9b19e02a147443::t_8e8ff80563ad60 1-10,15-105,107-109,113-123
+  s_9b19e02a147443::t_98c42f92eaf8d2 11-14
+  s_9b19e02a147443::t_e8bf0def68de2e 106
+  s_b051ff25d413d1::t_e2cee74c7ba096 110-112
+tests/test_agent_platform_import_addsection.py
+  s_9b19e02a147443::t_63eeb7ce91a4b4 71-72,91-92,95,105-106
+src/paper_agent/evaluation/models.py
+  s_9b19e02a147443::t_0581897eaccb9d 1-132
+src/paper_agent/evaluation/metrics.py
+  s_9b19e02a147443::t_7b1a34caf5b69c 1-33,76-85,91-95,101-103,124-146,151-224,241-266
+  s_9b19e02a147443::t_aa9a86a1c3d3e9 225-240
+  s_9b19e02a147443::t_8a985c7c09eeed 86-90
+  s_9b19e02a147443::t_49b042f34a4a23 96-100
+  s_b051ff25d413d1::t_b162bdf07065c0 104-108,147-150
+  s_9b19e02a147443::t_70b045d84cf054 59-75,109-110
+  s_9b19e02a147443::t_655a86c1bcf882 34-58,111-123
+eval/cases/smoke/draft_revision.json
+  s_9b19e02a147443::t_b91706e592abf0 1-22
+src/paper_agent/agents/language_polish_agent.py
+  s_9b19e02a147443::t_3887608f27966e 54-57,59-60,84-87
+  s_9b19e02a147443::t_4728a4a3e672f9 20,61-64
+src/paper_agent/observability/usage.py
+  s_b051ff25d413d1::t_b2bbbc1a8ff1ec 20-30,39-40,52-53,69-72,75-85
+tests/test_hard_budgets_and_eval_acceptance.py
+  s_3c6edbfe32ef6b::t_058e6b68d78d9e 4-5,18-23,84-149,151-170
+  s_b051ff25d413d1::t_0b3a903d850c76 1-3,6-16,24-28,35-80,173-273,275-287
+  s_3c6edbfe32ef6b::t_28e696bb9ba60a 29-34,150
+  s_b051ff25d413d1::t_0756e12a80f403 17,81-83,171-172,274
+src/paper_agent/agent_platform/app.py
+  s_9b19e02a147443::t_549afd64d46a99 417-423
+src/paper_agent/agents/citation_faithfulness_agent.py
+  s_9b19e02a147443::t_90fddab5ac58bc 126-183
+  s_b051ff25d413d1::t_cc44a3e27c76be 459-461,466-473,475-477,479-488
+  s_edbab0b153d313::t_f341af4b86ac59 474,478,491-494
+  s_b051ff25d413d1::t_455ae754b8ee5f 23-25,259-260,268-269,273-276,287-289,334-348,353-356,361-375,427,569,581,593,604,618,628-639,641,648
+  s_9b19e02a147443::t_9e1ce1d1580d00 292,357-360,376-405,407,409-414,418-426,428-438,448-458,462-465,533-540,551-557
+  s_b051ff25d413d1::t_471187a50b98a8 293,349-352,406,408,415-417,541-550
+  s_9b19e02a147443::t_d1f31773990612 313-316
+  s_b051ff25d413d1::t_cbed4992b8bef1 439-447
+  s_9b19e02a147443::t_c84d709805bf50 30
+  s_edbab0b153d313::t_afc27c607200f3 184-226,277-281,290-291,489-490,495-532,570-571,642-647
+  s_9b19e02a147443::t_cf4efac839463f 297-303
+src/paper_agent/agent_platform/intake.py
+  s_a515b24456d149::t_4ae79a37bbc909 156-160,169-171
+  s_577e84e05e5a62::t_f836120bdecbf6 105,143-144,154-155,164-168
+  s_a515b24456d149::t_e26f496035a8f8 107-110,149,163
+src/paper_agent/observability/budget.py
+  s_3c6edbfe32ef6b::t_ab36b8feb0caca 6-8,11,14-16,67-72,74,90-110,112-149,154-156,163-164,166
+  s_b051ff25d413d1::t_f63e6d4825ca63 59-61
+  s_b051ff25d413d1::t_b7ff27f5681b22 1-5,9-10,12-13,17-40,47-58,62-66,73,75-89,157-162,165,167-168
+  s_9b19e02a147443::t_c75262f13b5be6 41-46
+  s_3c6edbfe32ef6b::t_f60543151230e5 111,150-153
+tests/test_faithfulness_deep_review.py
+  s_edbab0b153d313::t_337eb9ceb26dd3 205,208-218,236,239,241-242,246
+  s_edbab0b153d313::t_4dd4ea39b9008b 1-148,152-204,206-207,219-235,237-238,240,243-245
+  s_edbab0b153d313::t_20f21fe5cad75f 149-151
+tests/test_adversarial_review.py
+  s_9b19e02a147443::t_7ae559b1651698 349-356
+  s_9b19e02a147443::t_74e1c64a5b0f4d 332-348,357-358
+.env.example
+  s_9b19e02a147443::t_ee7dcc86dac614 17-21
+src/paper_agent/agent_platform/models.py
+  s_a515b24456d149::t_99ef6d880bdfa1 51
+.gitignore
+  s_9b19e02a147443::t_eb0ba72c347af6 14
+  s_9b19e02a147443::t_0f39680b947cc9 13
+src/paper_agent/prompts/templates.py
+  s_9b19e02a147443::t_d9bf477d9d2bdb 193-198,217-228
+  s_edbab0b153d313::t_c720c45491a8f7 369-402
+  s_9b19e02a147443::t_7ac7d9ce1faea1 160-164,173-177,181-184,365-368
+  s_9b19e02a147443::t_1c27487d54ca5a 15-16,354-364
+tests/test_citation_audit.py
+  s_9b19e02a147443::t_c896b9f8ff18f1 10-17,88-100
+src/paper_agent/workspace/research_artifact.py
+  s_9b19e02a147443::t_55988fa66c94b6 412-429
+  s_9b19e02a147443::t_3b70ee112015ba 254-258,276-284,293,304-306,309-310,312,315,321-336,339-344,346-351,353-358,378-383,446-483
+  s_9b19e02a147443::t_a2593eab2cd380 177,184-198,200
+  s_9b19e02a147443::t_14407f4bf200e7 398-409
+  s_9b19e02a147443::t_e9ae84634bef18 437,442-444
+  s_9b19e02a147443::t_0b9428c61af1cf 179-181,201
+  s_9b19e02a147443::t_9c59f521bab9e2 285-292,294-302,307,311,362-364
+  s_9b19e02a147443::t_3f120b5b6dc6a1 313-314,436,438-439
+  s_9b19e02a147443::t_c1dbf8a4785689 19-21,204-207,242-253,259-275,303,308,316-320,337-338,345,352,359-361,365-377,384-397,410-411,430-435,440-441,445,491
+tests/test_faithfulness_props_safety.py
+  s_b051ff25d413d1::t_87114fbbd13bd4 196
+  s_9b19e02a147443::t_73fe7b5c4378d1 195,197-198
+tests/test_artifact_contract.py
+  s_9b19e02a147443::t_45a56f91e2200f 2,4-186
+  s_9b19e02a147443::t_92d548b94f5f54 190,195,206
+  s_9b19e02a147443::t_88136eb2d827c6 1,3,187-189,191-194,196-205
+src/paper_agent/tools/quality_gate.py
+  s_9b19e02a147443::t_94b6171e94cddf 28,232-240,243,245-249,252-256
+  s_9b19e02a147443::t_01cce920bbd2dd 405-411,429
+  s_9b19e02a147443::t_99c625b5f75dbb 115,117,119-125
+  s_9b19e02a147443::t_78cfeec05b14f7 334-338
+  s_9b19e02a147443::t_05e1d1e7c70a8f 352,394-396,401-404,412-414
+  s_9b19e02a147443::t_6cf586bef62ee2 151
+  s_9b19e02a147443::t_3bed49f1be4f3b 397,399-400
+  s_9b19e02a147443::t_13675f5f896a45 385
+  s_9b19e02a147443::t_fcc9cddd1d71be 417,423
+  s_9b19e02a147443::t_683d56a92d228b 113-114,116,118
+  s_9b19e02a147443::t_461a45cbb9abcc 106-112
+  s_9b19e02a147443::t_98392f80425bea 101-105,128,133
+  s_9b19e02a147443::t_1abeee2ec8b435 37-45,398
+  s_9b19e02a147443::t_035c8c027f6a0c 127,129-132,134-135
+  s_9b19e02a147443::t_3da4a3d741cf50 266-267,278-333,339-351
+  s_9b19e02a147443::t_7cdd69523ac97a 472-479,481
+tests/test_entry_and_batch.py
+  s_a515b24456d149::t_83072109ffd636 138-158
+tests/test_faithfulness_extract_unit.py
+  s_9b19e02a147443::t_538ad41ad60d1d 47-57
+  s_9b19e02a147443::t_dea104628c2c46 18,31-46
+src/paper_agent/agents/review_agent.py
+  s_9b19e02a147443::t_100da8516f70c1 22-23,36,91-94,100-103
+tests/test_submittability_polish_intake.py
+  s_9b19e02a147443::t_d0487756112ba1 213-235
+src/paper_agent/config.py
+  s_9b19e02a147443::t_1518c14400ffba 148-151
+  s_b051ff25d413d1::t_3a6315f46a4238 40-41
+  s_9b19e02a147443::t_5660a0187eb50a 42-44
+tests/test_prompts_and_plan.py
+  s_577e84e05e5a62::t_690606ad7a3430 62-91
+tests/test_research_artifact.py
+  s_9b19e02a147443::t_d9cedede57b620 370,374-376
+  s_9b19e02a147443::t_e7306a13a47fac 431-439,447
+  s_9b19e02a147443::t_a99dbfe21e1659 89,106
+  s_9b19e02a147443::t_57ff5b238fa034 20,107-125
+  s_9b19e02a147443::t_fdbfe506faac67 363
+  s_9b19e02a147443::t_43cb00657d4325 359-362,364-369
+  s_9b19e02a147443::t_e5fc483f352339 371-373
+tests/test_llm_retry.py
+  s_3c6edbfe32ef6b::t_1ec6f93c2002d0 13,18-23,117-147
+tests/test_agent_platform_agent_intake.py
+  s_577e84e05e5a62::t_021c5a7f02beb6 210-219,241-242
+  s_a515b24456d149::t_938a929b4ab8ef 24,220-240
+tests/test_evaluation.py
+  s_a515b24456d149::t_2a105bf2500719 5-6,12,142-167
+  s_9b19e02a147443::t_db744442b9ab52 1-4,7-11,13-141
+src/paper_agent/orchestrator.py
+  s_9b19e02a147443::t_8beea8597fd619 1113-1117,1135-1147
+  s_9b19e02a147443::t_03217dcf579685 232,237,1157-1161
+  s_9b19e02a147443::t_9221fb4a28c4fd 1148-1153
+  s_b051ff25d413d1::t_69006af44499c7 27-33,156-176,233-235,238-240,509-511,530,533,668,1118-1130,1156,1162-1181
+  s_edbab0b153d313::t_5826dfc5884e67 982
+  s_577e84e05e5a62::t_bfe0d1abf973f5 16,615-626,641-667,961,964-981
+  s_9b19e02a147443::t_bdc1e5e55ade76 983-986
+src/paper_agent/agents/plan_agent.py
+  s_9b19e02a147443::t_19b4981fb2dce0 130-140,151,156,175-188,195-196,202-208,218,220-228,230-234
+  s_577e84e05e5a62::t_182a56176b947e 13,89-91
+  s_9b19e02a147443::t_67045098c29deb 209-217
+  s_9b19e02a147443::t_253035d6275965 109-113,119,219,229
+  s_9b19e02a147443::t_f5a9b27f9aea00 99-108,114-118,120-122
+eval/cases/smoke/generation_grounded.json
+  s_9b19e02a147443::t_e7935e583ba305 1-59
+src/paper_agent/providers/llm/resilient.py
+  s_3c6edbfe32ef6b::t_b992323a47ad7e 30-34,296-298,301-302,319,353,362-363,381,390-404
+src/paper_agent/providers/factory.py
+  s_9b19e02a147443::t_86dab39f62725e 125-126
+  s_9b19e02a147443::t_48c77c506cca70 103-124,127-136
+src/paper_agent/evaluation/runner.py
+  s_9b19e02a147443::t_e64a3aee61954d 249-251
+  s_b051ff25d413d1::t_6e6537899622ff 116-127,130,132
+  s_9b19e02a147443::t_7ad1c9bad31627 1-20,22,25-104,137-160,169-198,200-203,205-206,208-228,232-236,238-248,252,258-261,268-269,273-291,301-327
+  s_b051ff25d413d1::t_a0c894b8028b8a 21,105-115,128-129,131,133-136,161-168,253-257,262-267,270-271,292-300
+  s_9b19e02a147443::t_46a7ff02f912e2 24,272
+  s_9b19e02a147443::t_d18063a68b477c 23,199,204,229-231,237
+  s_a515b24456d149::t_71e586a845b7d1 207
+src/paper_agent/ingestion/__init__.py
+  s_a515b24456d149::t_ac9794893da832 11,34-40,42-47,58
+  s_577e84e05e5a62::t_a2ec2691a7b71b 1-3,13,16-33,41,48-52,59-65
+src/paper_agent/observability/llm_wrapper.py
+  s_3c6edbfe32ef6b::t_e401eea523f28d 13-16,20-25,31,111,117-118,121-124,130-136,194,224-229,232-239,253,258,260-332,346-356,358-362,364-372
+  s_3c6edbfe32ef6b::t_d7c7e2711cf425 333-345
+  s_b051ff25d413d1::t_a97a44d620c58d 19,47-48,58-59,61-64,67,74-93,112,153,159,195,213-215,220,230
+  s_b051ff25d413d1::t_176df5bb36bc62 65-66
+  s_9b19e02a147443::t_9728a88a880023 49,60,68-73,256-257,259,357,363
+tests/test_faithfulness_templates_unit.py
+  s_edbab0b153d313::t_64b68283f37fa8 126-146
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.33-trip",
+  "base_commit_sha": "e0a790cff02c6c284fc5ebfb47ef109a7e201bb5",
+  "prompts": {},
+  "sessions": {
+    "s_3c6edbfe32ef6b": {
+      "agent_id": {
+        "tool": "cursor",
+        "id": "ee63a3ae-0b98-49e4-a291-27189ff82382",
+        "model": "gpt-5.6-sol-medium"
+      },
+      "human_author": "yangwan <yangwan@trip.com>"
+    },
+    "s_577e84e05e5a62": {
+      "agent_id": {
+        "tool": "cursor",
+        "id": "9414cc10-5a32-4e70-8cb9-ba8082288b50",
+        "model": "gpt-5.6-sol-medium"
+      },
+      "human_author": "yangwan <yangwan@trip.com>"
+    },
+    "s_9b19e02a147443": {
+      "agent_id": {
+        "tool": "cursor",
+        "id": "02551d0d-bbff-40a6-99f6-c233e0b02891",
+        "model": "gpt-5.6-sol"
+      },
+      "human_author": "yangwan <yangwan@trip.com>"
+    },
+    "s_a515b24456d149": {
+      "agent_id": {
+        "tool": "cursor",
+        "id": "2da24e9c-3358-4fc6-beed-d6c6ed663641",
+        "model": "gpt-5.6-sol-medium"
+      },
+      "human_author": "yangwan <yangwan@trip.com>"
+    },
+    "s_b051ff25d413d1": {
+      "agent_id": {
+        "tool": "cursor",
+        "id": "54064792-e143-4fc2-a0f1-72e41ba7f8d6",
+        "model": "gpt-5.6-sol-medium"
+      },
+      "human_author": "yangwan <yangwan@trip.com>"
+    },
+    "s_edbab0b153d313": {
+      "agent_id": {
+        "tool": "cursor",
+        "id": "53e698e2-ca6b-4280-9bd7-71135886c86c",
+        "model": "gpt-5.6-sol-medium"
+      },
+      "human_author": "yangwan <yangwan@trip.com>"
+    }
+  }
+}
