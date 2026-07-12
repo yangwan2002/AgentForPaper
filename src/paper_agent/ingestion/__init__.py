@@ -18,6 +18,7 @@ from paper_agent.ingestion.quality import (
     assess_ingestion_quality,
 )
 from paper_agent.ingestion.sections import (
+    normalize_extracted_text,
     split_academic_sections,
     split_document_sections,
     split_draft_into_sections,
@@ -61,6 +62,7 @@ __all__ = [
     "assess_ingestion_quality",
     "ingest_document",
     "load_document_with_quality",
+    "normalize_extracted_text",
     "split_academic_sections",
     "split_document_sections",
     "split_draft_into_sections",

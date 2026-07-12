@@ -30,6 +30,72 @@ _NUMBERED = re.compile(r"^(\d{1,2})[\s、.]+([^\W\d_].{0,34})$")
 _LETTER_ROMAN = re.compile(r"^([IVXLCDM]{1,4})\.\s+([^\W\d_].{0,34})$")
 _CN_CHAPTER = re.compile(r"^第[一二三四五六七八九十百千\d]+[章节][\s：:、]*(.{0,36})$")
 _SENTENCE_END = ("。", "，", "、", "；", "：", ".", ",", ";", ":")
+_STANDALONE_NUMBER = re.compile(r"^\d{1,2}\.?$")
+_STANDALONE_ROMAN = re.compile(r"^[IVXLCDM]{1,4}\.?$")
+_PDF_HEADER_FOOTER = re.compile(
+    r"^(?:"
+    r"(?:https?://(?:dx\.)?doi\.org/)?10\.\d{4,}/\S+"
+    r"|(?:doi|DOI)\s*:?\s*10\.\d{4,}/\S+"
+    r"|(?:Vol\.?|Volume|No\.?|Issue|Iss\.?|Part)\s*[\d:.]+(?:\s*[-–—]\s*[\d:.]+)?"
+    r"|Page\s+\d+\s+of\s+\d+"
+    r"|第\s*\d+\s*页"
+    r"|\d{3,4}\s*$"
+    r")$",
+    re.IGNORECASE,
+)
+
+
+def _looks_like_title_line(line: str) -> bool:
+    s = line.strip()
+    if not s or len(s) > 40:
+        return False
+    if _STANDALONE_NUMBER.match(s) or _STANDALONE_ROMAN.match(s):
+        return False
+    if s.endswith(_SENTENCE_END):
+        return False
+    if not re.search(r"[^\W\d_]", s, flags=re.UNICODE):
+        return False
+    if s.count("。") + s.count(".") > 1:
+        return False
+    return True
+
+
+def _merge_split_heading_lines(lines: list[str]) -> list[str]:
+    """PyMuPDF 常把「1」与「引言(Introduction)」拆成两行，合并后再切分。"""
+    merged: list[str] = []
+    idx = 0
+    while idx < len(lines):
+        current = lines[idx]
+        stripped = current.strip()
+        if idx + 1 < len(lines):
+            nxt = lines[idx + 1].strip()
+            if (
+                (_STANDALONE_NUMBER.match(stripped) or _STANDALONE_ROMAN.match(stripped))
+                and _looks_like_title_line(nxt)
+            ):
+                prefix = stripped.rstrip(".")
+                merged.append(f"{prefix} {nxt}")
+                idx += 2
+                continue
+        merged.append(current)
+        idx += 1
+    return merged
+
+
+def _strip_pdf_header_footer_lines(lines: list[str]) -> list[str]:
+    """去掉 DOI、刊头、孤立页码等不应进入正文的行。"""
+    return [line for line in lines if not _PDF_HEADER_FOOTER.match(line.strip())]
+
+
+def normalize_extracted_text(text: str, *, strip_pdf_noise: bool = False) -> str:
+    """PDF/抽取文本预处理：可选剥离页眉页脚，并合并两行章节标题。"""
+    if not text:
+        return text
+    lines = text.splitlines()
+    lines = _merge_split_heading_lines(lines)
+    if strip_pdf_noise:
+        lines = _strip_pdf_header_footer_lines(lines)
+    return "\n".join(lines)
 
 
 def split_draft_into_sections(draft: str) -> list[tuple[str, str, str]]:
@@ -110,6 +176,7 @@ def split_academic_sections(text: str) -> list[tuple[str, str, str]]:
 
 def split_document_sections(text: str) -> list[tuple[str, str, str]]:
     """统一章节入口：显式结构优先，单章节时用学术启发式兜底。"""
+    text = normalize_extracted_text(text)
     sections = split_draft_into_sections(text)
     if len(sections) <= 1:
         academic = split_academic_sections(text)
@@ -119,6 +186,7 @@ def split_document_sections(text: str) -> list[tuple[str, str, str]]:
 
 
 __all__ = [
+    "normalize_extracted_text",
     "split_academic_sections",
     "split_document_sections",
     "split_draft_into_sections",

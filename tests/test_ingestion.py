@@ -10,6 +10,7 @@ from paper_agent.ingestion import (
     ingest_document,
     load_document,
     load_document_with_quality,
+    normalize_extracted_text,
     split_document_sections,
     supported_extensions,
 )
@@ -177,3 +178,44 @@ def test_unified_splitter_uses_academic_fallback():
         "2 Methods",
         "3 Results",
     ]
+
+
+def test_pdf_two_line_heading_merge():
+    """PyMuPDF 常把编号与标题拆成两行，合并后应切出多章节。"""
+    text = (
+        "10.1234/example.doi\n"
+        "Vol. 12 No. 3\n"
+        "1\n"
+        "引言(Introduction)\n"
+        "intro body.\n"
+        "2\n"
+        "方法(Methods)\n"
+        "method body.\n"
+        "3\n"
+        "实验(Experiments)\n"
+        "exp body.\n"
+        "4\n"
+        "结论(Conclusion)\n"
+        "conclusion body.\n"
+        "1052\n"
+    )
+    sections = split_document_sections(text)
+    assert len(sections) >= 4
+    assert [title for _sid, title, _body in sections] == [
+        "1 引言(Introduction)",
+        "2 方法(Methods)",
+        "3 实验(Experiments)",
+        "4 结论(Conclusion)",
+    ]
+
+
+def test_quality_structural_score_reflects_heading_density():
+    text = normalize_extracted_text(
+        "1\nIntroduction\nbody.\n"
+        "2\nMethods\nbody.\n"
+        "3\nResults\nbody.\n"
+        "4\nConclusion\nbody.\n"
+    )
+    report = assess_ingestion_quality(text + ("x" * 3200), source_type=".pdf")
+    assert report.metrics["section_heading_count"] >= 4
+    assert report.metrics["structural_score"] == 100

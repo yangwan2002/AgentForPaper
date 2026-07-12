@@ -10,6 +10,7 @@ import re
 from dataclasses import asdict, dataclass, field
 
 from paper_agent.agent_platform.acceptance import detect_mojibake
+from paper_agent.ingestion.sections import normalize_extracted_text
 
 
 _CID = re.compile(r"(?:\(\s*cid\s*:\s*\d+\s*\)|\bcid\s*:\s*\d+)", re.IGNORECASE)
@@ -49,6 +50,9 @@ def assess_ingestion_quality(
     source_type: str = "",
 ) -> IngestionQualityReport:
     """评估抽取文本；阈值偏保守，避免把正常英文或短文档误拒绝。"""
+    normalized = normalize_extracted_text(
+        text, strip_pdf_noise=source_type.lower() == ".pdf"
+    )
     total = len(text)
     nonspace = sum(not ch.isspace() for ch in text)
     replacement_count = text.count("\ufffd")
@@ -57,7 +61,17 @@ def assess_ingestion_quality(
     cjk_count = sum("\u3400" <= ch <= "\u9fff" for ch in text)
     letters = sum(ch.isalpha() for ch in text)
     printable_count = sum(ch.isprintable() or ch in "\n\r\t" for ch in text)
-    heading_count = len(_STRUCTURAL_HEADING.findall(text))
+    heading_count = len(_STRUCTURAL_HEADING.findall(normalized))
+    structural_score = 100
+    if nonspace >= 3000:
+        if heading_count >= 4:
+            structural_score = 100
+        elif heading_count >= 2:
+            structural_score = 70
+        elif heading_count == 1:
+            structural_score = 40
+        else:
+            structural_score = 0
 
     denominator = max(nonspace, 1)
     metrics: dict[str, float | int | None] = {
@@ -65,6 +79,7 @@ def assess_ingestion_quality(
         "non_whitespace_count": nonspace,
         "page_count": page_count,
         "section_heading_count": heading_count,
+        "structural_score": structural_score,
         "mojibake_detected": mojibake_detected,
         "cid_noise_count": cid_count,
         "cid_noise_ratio": cid_count / denominator,
@@ -125,9 +140,9 @@ def assess_ingestion_quality(
             penalty += 20
 
     confirmation_required = False
-    # 正文可读但长文没有任何可识别结构，需要调用方明确确认后才能继续。
-    if nonspace >= 3000 and heading_count == 0:
-        warnings.append("长文档正文可读，但未检测到章节结构")
+    # 正文可读但长文缺少可识别章节结构，需要调用方明确确认后才能继续。
+    if nonspace >= 3000 and heading_count < 2:
+        warnings.append("长文档正文可读，但未检测到足够章节结构")
         confirmation_required = True
         penalty += 10
     if heading_count > 200 or (

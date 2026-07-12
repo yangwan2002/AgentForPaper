@@ -20,7 +20,7 @@ from paper_agent.ingestion.quality import (
     IngestionQualityReport,
     assess_ingestion_quality,
 )
-from paper_agent.ingestion.sections import split_draft_into_sections
+from paper_agent.ingestion.sections import normalize_extracted_text
 
 
 class DocumentLoadError(Exception):
@@ -251,6 +251,8 @@ def load_document_with_quality(
             f"不支持的文件类型 {ext}；支持：{', '.join(supported_extensions())}"
         )
     text = loader(path, asset_dir)
+    if ext == ".pdf":
+        text = normalize_extracted_text(text, strip_pdf_noise=True)
     page_count = _pdf_page_count(path) if ext == ".pdf" else None
     report = assess_ingestion_quality(
         text, page_count=page_count, source_type=ext
