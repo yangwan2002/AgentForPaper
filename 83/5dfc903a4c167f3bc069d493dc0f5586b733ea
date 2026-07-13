@@ -1,0 +1,28 @@
+src/paper_agent/agents/writing_agent.py
+  s_9b19e02a147443::t_931529fb8c2c30 783-788
+src/paper_agent/orchestrator.py
+  s_9b19e02a147443::t_b197386cb915c6 574,577-578
+  s_9b19e02a147443::t_2e05aefed4e23c 1080-1096
+tests/test_submittability_polish_intake.py
+  s_9b19e02a147443::t_b022f2c329eee1 191-218
+src/paper_agent/workspace/submittability.py
+  s_9b19e02a147443::t_edb9919fcf145c 28-32,135
+  s_9b19e02a147443::t_cd5052960888b4 97-98,105,110-134
+  s_9b19e02a147443::t_b9d92ace62e92a 76
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.33-trip",
+  "base_commit_sha": "835dfc903a4c167f3bc069d493dc0f5586b733ea",
+  "prompts": {},
+  "sessions": {
+    "s_9b19e02a147443": {
+      "agent_id": {
+        "tool": "cursor",
+        "id": "02551d0d-bbff-40a6-99f6-c233e0b02891",
+        "model": "default"
+      },
+      "human_author": "yangwan <yangwan@trip.com>"
+    }
+  }
+}
