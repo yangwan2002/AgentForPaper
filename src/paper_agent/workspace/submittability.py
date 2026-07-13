@@ -25,6 +25,11 @@ _FORMAT_FAIL_MARKERS = (
     "格式校验降级",
     "已降级",
 )
+# 准确性达标终止：与 quality_met 同等视为「硬约束循环已收敛」。
+_ACCURACY_SUCCESS_REASONS = frozenset({"quality_met", "accuracy_met"})
+# Agent 新增伪造引用 → 硬闸；原稿遗留未核验引用 → 仅 caution。
+_AGENT_CITATION_BLOCKERS = frozenset({"text_citation_invalid", "invalid_citation"})
+_SOURCE_CITATION_CAUTION = "source_citation_unverified"
 
 
 @dataclass
@@ -68,7 +73,7 @@ def assess_submittability(
     硬约束（任一不满足 → 不可投递）：
     1. GENERATION 模式但无真实研究内容（artifact 缺失或为空）→ 产物为「LLM 推断版」，
        方法/数据可能为编造，绝不可投递。
-    2. 反馈循环未以 ``quality_met`` 终止（质量未达标 / 评审不可信 / 停滞 / 预算超额）。
+    2. 反馈循环未以 ``quality_met`` / ``accuracy_met`` 终止（质量未达标 / 评审不可信 / 停滞 / 预算超额）。
     3. 导出说明含「格式未通过/未校验/降级」——目标格式无法保证正确编译/版式。
     4. 存在空章节（质量报告中的 empty_section 高严重度问题）。
 
@@ -89,17 +94,44 @@ def assess_submittability(
             "产出为 LLM 推断版，方法与数据可能系编造，不可作为真实论文投递。"
         )
 
-    # 硬约束 2：质量未达标。
-    if terminated_reason and terminated_reason != "quality_met":
+    # 硬约束 2：质量/准确性未达标。
+    if terminated_reason and terminated_reason not in _ACCURACY_SUCCESS_REASONS:
         reason_label = {
             "iteration_limit": "达到迭代上限但质量仍未全维度达标",
             "iteration_limit_unparsed_review": "达到迭代上限且最近评审不可信（解析失败）",
             "stagnation": "连续多轮无实质改进即提前终止，质量未达标",
             "budget_exceeded": "token 预算超额降级终止，质量未达标",
             "deadline_exceeded": "墙钟超时降级终止，质量未达标",
+            "accuracy_met": "准确性硬约束已满足，但写作/评审维度未全达标",
         }.get(terminated_reason, f"反馈循环以非达标原因终止（{terminated_reason}）")
         verdict.submittable = False
         verdict.blockers.append(f"质量闸未通过：{reason_label}。")
+
+    # 硬约束 5：Agent 新增伪造/非法引用（原稿遗留未核验引用不算硬闸）。
+    agent_citation_issues = [
+        issue
+        for issue in ws.quality_report
+        if issue.get("type") in _AGENT_CITATION_BLOCKERS
+        and issue.get("severity") == "high"
+    ]
+    if agent_citation_issues:
+        verdict.submittable = False
+        sample = agent_citation_issues[0].get("message", "")
+        verdict.blockers.append(
+            "存在 Agent 新增或非法引用（text_citation_invalid / invalid_citation），"
+            f"需修正后方可投递。示例：{sample[:240]}"
+        )
+
+    source_unverified = [
+        issue
+        for issue in ws.quality_report
+        if issue.get("type") == _SOURCE_CITATION_CAUTION
+    ]
+    if source_unverified:
+        verdict.cautions.append(
+            f"原稿含 {len(source_unverified)} 处未经外部库核验的引用编号（source_citation_unverified），"
+            "建议人工核对后再投稿。"
+        )
 
     # 硬约束 3：格式未通过/降级。
     fmt_issue = next(

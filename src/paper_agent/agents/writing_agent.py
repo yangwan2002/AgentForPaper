@@ -780,6 +780,12 @@ class WritingAgent(Agent):
                 parts.append("【评审建议·主观】" + sug)
             combined[sid] = "\n".join(parts)
 
+        if not combined and not structural:
+            return AgentResult(
+                mutations=[],
+                logs=["无可执行修订目标，本轮不改动任何章节。"],
+            )
+
         # 工具模式：模型在工具循环中用 read_section/edit_section 等做精确编辑，
         # WritingAgent 汇聚累积的 SectionEdit 为 WorkspaceMutation 落盘。
         #

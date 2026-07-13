@@ -571,8 +571,11 @@ class Orchestrator:
             # citation-faithfulness-audit（Req 6.3）：无 unsupported 发现（或未装配）
             # 才算引用忠实性达标；与既有三项 AND 合并。未装配时恒 True（Req 6.4/8.1）。
             faithfulness_ok = self._faithfulness_ok(ws)
+            accuracy_ok = self._accuracy_ok(ws, report)
             if llm_ok and gate_ok and adversarial_ok and faithfulness_ok:
                 return "quality_met", []  # 四方联合通过
+            if accuracy_ok:
+                return "accuracy_met", unmet
 
             # #7：评审可信但「论证充分性」不足（常意味着引用/论据不够）→ 回流补检索
             # 一次，使后续修订轮可引用新文献。仅触发一次，避免循环放大检索成本。
@@ -1073,6 +1076,23 @@ class Orchestrator:
         return not any(
             f.get("verdict") == "unsupported" for f in ws.citation_faithfulness
         )
+
+    def _accuracy_ok(self, ws: PaperWorkspace, report) -> bool:
+        """准确性硬约束达标：无 Agent 伪造引用/事实违规，忠实性无 unsupported。
+
+        不要求评审高分、对抗审 accept 或 gate 全绿；原稿遗留的
+        ``source_citation_unverified`` 不阻断 accuracy_met。
+        """
+        if not self._faithfulness_ok(ws):
+            return False
+        skip_types = {"source_citation_unverified"}
+        for issue in report.high_issues:
+            if issue.get("type") in skip_types:
+                continue
+            return False
+        if ws.artifact_violations:
+            return False
+        return True
 
     def _adversarial_ok(self, ws: PaperWorkspace) -> bool:
         """对抗式评审通过判据（Round 4）。

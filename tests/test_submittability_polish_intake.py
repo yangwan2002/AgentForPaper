@@ -188,6 +188,34 @@ def test_submittability_originality_is_caution_not_blocker():
     assert v.cautions
 
 
+def test_submittability_accuracy_met_counts_as_success():
+    ws = _ws({"intro": "内容"}, mode=InputMode.DRAFT_REVISION)
+    v = assess_submittability(ws, terminated_reason="accuracy_met")
+    assert v.submittable is True
+
+
+def test_submittability_agent_fabricated_citation_blocks_but_source_legacy_cautions():
+    ws = _ws({"intro": "内容"}, mode=InputMode.DRAFT_REVISION)
+    ws.quality_report = [
+        {
+            "type": "text_citation_invalid",
+            "severity": "high",
+            "section_id": "intro",
+            "message": "新增伪造引用",
+        },
+        {
+            "type": "source_citation_unverified",
+            "severity": "high",
+            "section_id": "intro",
+            "message": "原稿未核验引用",
+        },
+    ]
+    v = assess_submittability(ws, terminated_reason="accuracy_met")
+    assert v.submittable is False
+    assert any("Agent 新增" in b for b in v.blockers)
+    assert any("source_citation_unverified" in c for c in v.cautions)
+
+
 # --- 语言润色 ---
 
 
