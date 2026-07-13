@@ -37,16 +37,16 @@ def _grounding_fulltext_hit_rate(ws: PaperWorkspace) -> float:
             lookup[reference.source_id] = reference
         for alias in reference.citation_aliases:
             lookup[alias] = reference
-    matched = {
-        lookup[ref_id]
-        for ref_id in cited
-        if ref_id in lookup
-    }
+    matched: dict[str, object] = {}
+    for ref_id in cited:
+        if ref_id in lookup:
+            reference = lookup[ref_id]
+            matched[reference.id] = reference
     if not matched:
         return 1.0
     with_fulltext = sum(
         1
-        for reference in matched
+        for reference in matched.values()
         if (getattr(reference, "full_text", "") or "").strip()
     )
     return round(with_fulltext / len(matched), 6)
