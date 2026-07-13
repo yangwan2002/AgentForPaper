@@ -1,0 +1,51 @@
+src/paper_agent/evaluation/metrics.py
+  s_9b19e02a147443::t_77d66537fd7096 11
+  s_9b19e02a147443::t_5e094339d8adce 20-54
+  s_9b19e02a147443::t_af7a5da2b2b36c 134-138,140
+  s_9b19e02a147443::t_20f3cf356c3497 112-113
+scripts/run_eval.py
+  s_9b19e02a147443::t_03d0eea937675c 93
+tests/test_faithfulness_batching.py
+  s_9b19e02a147443::t_cc79795020e1ba 85-95
+  s_9b19e02a147443::t_771a238691eab7 75-84,96-141
+  s_9b19e02a147443::t_28163b41e6cb51 142
+src/paper_agent/orchestrator.py
+  s_9b19e02a147443::t_17c68e1cf71469 921,925-927,933
+src/paper_agent/agents/citation_faithfulness_agent.py
+  s_9b19e02a147443::t_94e32836a1848a 335,337,339
+  s_9b19e02a147443::t_3976512671430e 30-34,336
+  s_9b19e02a147443::t_7f96b1365361b2 298
+src/paper_agent/evaluation/runner.py
+  s_9b19e02a147443::t_845b28c7511c50 165-172
+  s_9b19e02a147443::t_0e39e5237140c9 53-80
+tests/test_evaluation.py
+  s_9b19e02a147443::t_1aca0f1dace2c2 58-59
+  s_9b19e02a147443::t_99f281e5106188 73-74
+src/paper_agent/evaluation/models.py
+  s_9b19e02a147443::t_aac060c2415e78 19,35-37,43
+src/paper_agent/tools/faithfulness_extract.py
+  s_9b19e02a147443::t_64f0416f91a54a 67-105
+  s_9b19e02a147443::t_3f4045266c5b6a 27
+  s_9b19e02a147443::t_7157f4691288f3 35-44
+tests/test_faithfulness_extract_unit.py
+  s_9b19e02a147443::t_79bdce203ecf42 58-78
+src/paper_agent/tools/reference_enrichment.py
+  s_9b19e02a147443::t_48b0b2db300a5d 70-77
+  s_9b19e02a147443::t_9cc8a713dbb42d 38,44,54-55
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.33-trip",
+  "base_commit_sha": "38708d76fcc8431c62be9c97ccc1e7edbff4202e",
+  "prompts": {},
+  "sessions": {
+    "s_9b19e02a147443": {
+      "agent_id": {
+        "tool": "cursor",
+        "id": "02551d0d-bbff-40a6-99f6-c233e0b02891",
+        "model": "default"
+      },
+      "human_author": "yangwan <yangwan@trip.com>"
+    }
+  }
+}
