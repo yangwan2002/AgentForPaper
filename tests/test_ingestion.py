@@ -209,6 +209,34 @@ def test_pdf_two_line_heading_merge():
     ]
 
 
+def test_academic_heading_filters_pdf_formula_and_axis_noise():
+    """公式碎片、坐标轴标签和子节 C./D. 不应被当成顶级章节。"""
+    noise_lines = [
+        "2 X k=1",
+        "3 其中，L(k)",
+        "4 UAV",
+        "80 x / m",
+        "80 y / m",
+        "C. 掩膜约束下的特征匹配结果",
+        "D. Relay桥接与轨迹统一结果",
+    ]
+    text = (
+        "1\n引言(Introduction)\nintro body.\n"
+        "I. 方法\nmethod body.\n"
+        + "\n".join(f"{line}\nnoise body." for line in noise_lines)
+        + "\nII. 实验与结果分析\nexp body.\n"
+        "REFERENCES\nref body.\n"
+    )
+    sections = split_document_sections(text)
+    titles = [title for _sid, title, _body in sections]
+    assert "1 引言(Introduction)" in titles
+    assert "I. 方法" in titles
+    assert "II. 实验与结果分析" in titles
+    assert "REFERENCES" in titles
+    assert not any(title in titles for title in noise_lines)
+    assert len(sections) <= 6
+
+
 def test_quality_structural_score_reflects_heading_density():
     text = normalize_extracted_text(
         "1\nIntroduction\nbody.\n"

@@ -26,8 +26,23 @@ _SECTION_WORDS = frozenset(
 )
 # Only top-level integer/Roman headings become Workspace sections. Decimal
 # headings (2.1) and lettered headings (A.) stay inside their parent section.
-_NUMBERED = re.compile(r"^(\d{1,2})[\s、.]+([^\W\d_].{0,34})$")
-_LETTER_ROMAN = re.compile(r"^([IVXLCDM]{1,4})\.\s+([^\W\d_].{0,34})$")
+_NUMBERED = re.compile(
+    r"^(?P<num>\d{1,2})[\s、.]+(?P<title>[^\W\d_].{0,34})$"
+)
+_LETTER_ROMAN = re.compile(
+    r"^(?P<roman>[IVXLCDM]{1,4})\.\s+(?P<title>[^\W\d_].{0,34})$"
+)
+# 单字母罗马数字 C/D/L/M 在 PDF 中更常是子节 (C.)，不是 I./II. 级章节。
+_TOP_LEVEL_ROMAN = frozenset({"I", "II", "III", "IV", "V", "VI", "VII", "VIII", "IX", "X", "XI", "XII"})
+_MATH_NOISE = re.compile(
+    r"(?:"
+    r"[=^]|"
+    r"\b[kxyz]\s*[=)]|"
+    r"^[xy]\s*/\s*m|"
+    r"^其中"
+    r")",
+    re.IGNORECASE,
+)
 _CN_CHAPTER = re.compile(r"^第[一二三四五六七八九十百千\d]+[章节][\s：:、]*(.{0,36})$")
 _SENTENCE_END = ("。", "，", "、", "；", "：", ".", ",", ";", ":")
 _STANDALONE_NUMBER = re.compile(r"^\d{1,2}\.?$")
@@ -45,6 +60,33 @@ _PDF_HEADER_FOOTER = re.compile(
 )
 
 
+def _heading_title_text_ok(title: str) -> bool:
+    t = title.strip()
+    if not t or _MATH_NOISE.search(t):
+        return False
+    if re.fullmatch(r"[A-Za-z]{1,4}", t) and t.upper() not in _SECTION_WORDS:
+        return False
+    return True
+
+
+def _is_numbered_heading(line: str) -> bool:
+    match = _NUMBERED.match(line.strip())
+    if not match:
+        return False
+    if int(match.group("num")) > 12:
+        return False
+    return _heading_title_text_ok(match.group("title"))
+
+
+def _is_roman_heading(line: str) -> bool:
+    match = _LETTER_ROMAN.match(line.strip())
+    if not match:
+        return False
+    if match.group("roman") not in _TOP_LEVEL_ROMAN:
+        return False
+    return _heading_title_text_ok(match.group("title"))
+
+
 def _looks_like_title_line(line: str) -> bool:
     s = line.strip()
     if not s or len(s) > 40:
@@ -56,6 +98,8 @@ def _looks_like_title_line(line: str) -> bool:
     if not re.search(r"[^\W\d_]", s, flags=re.UNICODE):
         return False
     if s.count("。") + s.count(".") > 1:
+        return False
+    if _MATH_NOISE.search(s):
         return False
     return True
 
@@ -137,7 +181,7 @@ def _is_academic_heading(line: str) -> bool:
     s = line.strip()
     if not s or len(s) > 40 or s.endswith(_SENTENCE_END):
         return False
-    if _NUMBERED.match(s) or _LETTER_ROMAN.match(s) or _CN_CHAPTER.match(s):
+    if _is_numbered_heading(s) or _is_roman_heading(s) or _CN_CHAPTER.match(s):
         return True
     return s.lower().strip("：: .。") in _SECTION_WORDS
 
