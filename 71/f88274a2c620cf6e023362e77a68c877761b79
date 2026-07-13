@@ -1,0 +1,19 @@
+src/paper_agent/evaluation/metrics.py
+  s_9b19e02a147443::t_6cc4d1a4de848b 40-44,49
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.33-trip",
+  "base_commit_sha": "71f88274a2c620cf6e023362e77a68c877761b79",
+  "prompts": {},
+  "sessions": {
+    "s_9b19e02a147443": {
+      "agent_id": {
+        "tool": "cursor",
+        "id": "02551d0d-bbff-40a6-99f6-c233e0b02891",
+        "model": "default"
+      },
+      "human_author": "yangwan <yangwan@trip.com>"
+    }
+  }
+}
