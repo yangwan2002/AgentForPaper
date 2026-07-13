@@ -35,12 +35,13 @@ def collect_full_texts(
     fetcher: FullTextFetcher,
     *,
     max_refs: int = 20,
+    cited_ids: set[str] | None = None,
 ) -> dict[str, str]:
     """为**已验证、有 pdf_url、full_text 仍为空**的文献收集正文，返回 ``{id: full_text}``。
 
     纯收集：不修改 ``refs``、不写工作区。对每条经注入的 ``fetcher`` 抓取；抓到非空
     文本才纳入结果（截断至上限）。上限 ``max_refs`` 限制网络调用数。任何单条失败
-    只跳过该条，不影响其余。
+    只跳过该条，不影响其余。若提供 ``cited_ids``，仅富化正文实际引用的文献。
     """
     out: dict[str, str] = {}
     if max_refs <= 0:
@@ -49,6 +50,8 @@ def collect_full_texts(
         if len(out) >= max_refs:
             break
         if not getattr(ref, "verified", False):
+            continue
+        if cited_ids is not None and not _reference_is_cited(ref, cited_ids):
             continue
         if (getattr(ref, "full_text", "") or "").strip():
             continue  # 已有正文，跳过
@@ -62,6 +65,14 @@ def collect_full_texts(
         if text and text.strip():
             out[ref.id] = text.strip()[:_MAX_FULL_TEXT_CHARS]
     return out
+
+
+def _reference_is_cited(ref: ReferenceEntry, cited_ids: set[str]) -> bool:
+    if ref.id in cited_ids:
+        return True
+    if ref.source_id and ref.source_id in cited_ids:
+        return True
+    return any(alias in cited_ids for alias in ref.citation_aliases)
 
 
 class PdfUrlFetcher:

@@ -8,12 +8,48 @@ from __future__ import annotations
 
 from typing import Any
 
+from paper_agent.tools.faithfulness_extract import cited_reference_ids
 from paper_agent.evaluation.models import EvalCase, MetricResult
 from paper_agent.orchestrator import PaperResult
 from paper_agent.workspace.models import PaperWorkspace
 
 
 _CITATION_ISSUES = {"invalid_citation", "text_citation_invalid"}
+
+
+def _faithfulness_audited_count(ws: PaperWorkspace) -> int:
+    return sum(
+        str(item.get("parse_status", "")).lower() in {"parsed", "repaired"}
+        for item in ws.citation_faithfulness
+    )
+
+
+def _grounding_fulltext_hit_rate(ws: PaperWorkspace) -> float:
+    cited: set[str] = set()
+    for draft in ws.section_drafts.values():
+        cited.update(cited_reference_ids(getattr(draft, "content", "") or ""))
+    if not cited:
+        return 1.0
+    lookup: dict[str, object] = {}
+    for reference in ws.verified_references:
+        lookup[reference.id] = reference
+        if reference.source_id:
+            lookup[reference.source_id] = reference
+        for alias in reference.citation_aliases:
+            lookup[alias] = reference
+    matched = {
+        lookup[ref_id]
+        for ref_id in cited
+        if ref_id in lookup
+    }
+    if not matched:
+        return 1.0
+    with_fulltext = sum(
+        1
+        for reference in matched
+        if (getattr(reference, "full_text", "") or "").strip()
+    )
+    return round(with_fulltext / len(matched), 6)
 
 
 def _faithfulness_count(ws: PaperWorkspace, verdict: str) -> int:
@@ -73,6 +109,8 @@ def diagnostics(
                 final_artifact_violations += len(
                     commit_gate.check(ws, node, draft).high_violations
                 )
+    faithfulness_total = len(ws.citation_faithfulness)
+    faithfulness_audited = _faithfulness_audited_count(ws)
     return {
         "duration_s": round(duration_s, 3),
         "section_count": len(ws.section_drafts),
@@ -93,11 +131,13 @@ def diagnostics(
         ),
         "unsupported_citations": _faithfulness_count(ws, "unsupported"),
         "cannot_verify_citations": _faithfulness_count(ws, "cannot_verify"),
-        "faithfulness_audited": sum(
-            str(item.get("parse_status", "")).lower()
-            in {"parsed", "repaired"}
-            for item in ws.citation_faithfulness
+        "faithfulness_audited": faithfulness_audited,
+        "faithfulness_total_claims": faithfulness_total,
+        "faithfulness_audited_ratio": round(
+            faithfulness_audited / max(faithfulness_total, 1),
+            6,
         ),
+        "grounding_fulltext_hit_rate": _grounding_fulltext_hit_rate(ws),
         "verified_references": len(ws.verified_references),
         "iteration": ws.iteration,
         "export_file_count": len(result.export.files) if result.export else 0,

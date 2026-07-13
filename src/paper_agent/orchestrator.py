@@ -918,14 +918,19 @@ class Orchestrator:
         """
         if self._full_text_fetcher is None or not ws.verified_references:
             return
+        from paper_agent.tools.faithfulness_extract import cited_reference_ids
         from paper_agent.tools.reference_enrichment import collect_full_texts
 
         self._emit(EventKind.PHASE, "文献正文富化阶段")
+        cited_ids: set[str] = set()
+        for draft in ws.section_drafts.values():
+            cited_ids.update(cited_reference_ids(getattr(draft, "content", "") or ""))
         try:
             collected = collect_full_texts(
                 ws.verified_references,
                 self._full_text_fetcher,
                 max_refs=getattr(self._config, "grounding_fulltext_max_refs", 20),
+                cited_ids=cited_ids or None,
             )
         except Exception as exc:  # noqa: BLE001 - 富化异常不中止管线
             self._emit(EventKind.AGENT_LOG, f"正文富化降级：{type(exc).__name__}")

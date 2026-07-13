@@ -55,8 +55,8 @@ def test_metrics_expose_hard_failures_and_unknown_assertions():
             },
         ],
         citation_faithfulness=[
-            {"verdict": "unsupported"},
-            {"verdict": "cannot_verify"},
+            {"verdict": "unsupported", "parse_status": "parsed"},
+            {"verdict": "cannot_verify", "parse_status": "n/a"},
         ],
     )
     result = PaperResult(
@@ -70,6 +70,8 @@ def test_metrics_expose_hard_failures_and_unknown_assertions():
     assert observed["fabricated_metrics"] == 1
     assert observed["fabricated_citations"] == 1
     assert observed["unsupported_citations"] == 1
+    assert observed["faithfulness_audited_ratio"] == 0.5
+    assert observed["faithfulness_total_claims"] == 2
 
     case = EvalCase(
         case_id="metrics",

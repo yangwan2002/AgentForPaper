@@ -90,7 +90,7 @@ def main(argv=None) -> int:
         adversarial_review_enabled=_env_bool("PAPER_ADVERSARIAL_REVIEW", True),
         citation_faithfulness_enabled=_env_bool("PAPER_FAITHFULNESS", True),
         faithfulness_max_claims=int(
-            os.environ.get("PAPER_FAITHFULNESS_MAX_CLAIMS", "12")
+            os.environ.get("PAPER_FAITHFULNESS_MAX_CLAIMS", "16")
         ),
         faithfulness_screen_deadline_s=float(
             os.environ.get("PAPER_FAITHFULNESS_DEADLINE_S", "30")

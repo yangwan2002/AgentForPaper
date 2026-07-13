@@ -27,7 +27,11 @@ from paper_agent.agents.base import Agent, AgentContext, AgentResult
 from paper_agent.observability.events import Event, EventKind, EventSink
 from paper_agent.parsing.structured_parser import StructuredParser
 from paper_agent.prompts import templates
-from paper_agent.tools.faithfulness_extract import extract_pairs, prepare_claim_text
+from paper_agent.tools.faithfulness_extract import (
+    extract_pairs,
+    prepare_claim_text,
+    sort_pairs_by_priority,
+)
 from paper_agent.tools.faithfulness_grounding import assemble_grounding
 from paper_agent.workspace.faithfulness import (
     CitationFaithfulnessFinding,
@@ -291,6 +295,7 @@ class CitationFaithfulnessAgent(Agent):
         deep_cache_hits = 0
         pending: list[dict] = []
         pending_by_key: dict[str, dict] = {}
+        verified_queue: list[ClaimCitationPair] = []
 
         verified_ids = ws.verified_reference_ids()
         # id -> ReferenceEntry 索引，供 grounding 组装快速查表。
@@ -316,7 +321,6 @@ class CitationFaithfulnessAgent(Agent):
                 scope_to_citation=True,
             )
 
-            # 未验证引用：直接成 cannot_verify，不调判定器（Req 1.5）。
             for pair in unverified_pairs:
                 findings.append(
                     self._finding(
@@ -328,9 +332,11 @@ class CitationFaithfulnessAgent(Agent):
                         unverified_reference=True,
                     )
                 )
+            verified_queue.extend(verified_pairs)
 
-            # 已验证引用：组装 grounding → 充足性短路 → 判定。逐对异常隔离（Req 7.6）。
-            for pair in verified_pairs:
+        verified_queue = sort_pairs_by_priority(verified_queue)
+
+        for pair in verified_queue:
                 cache_key = self._cache_key(pair, ref_by_id.get(pair.cited_reference_id))
                 cached = self._cache.get(cache_key)
                 if cached is not None:

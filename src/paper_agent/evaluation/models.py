@@ -16,6 +16,7 @@ class EvalCase:
     description: str
     input: dict[str, Any]
     assertions: dict[str, Any] = field(default_factory=dict)
+    config: dict[str, Any] = field(default_factory=dict)
     tags: list[str] = field(default_factory=list)
     requires_real_providers: bool = False
     source_path: str = ""
@@ -31,11 +32,15 @@ class EvalCase:
         assertions = data.get("assertions") or {}
         if not isinstance(assertions, dict):
             raise ValueError(f"评测案例 {case_id} 的 assertions 必须是对象")
+        config = data.get("config") or {}
+        if not isinstance(config, dict):
+            raise ValueError(f"评测案例 {case_id} 的 config 必须是对象")
         return cls(
             case_id=case_id,
             description=str(data.get("description") or ""),
             input=dict(input_data),
             assertions=dict(assertions),
+            config=dict(config),
             tags=[str(tag) for tag in (data.get("tags") or [])],
             requires_real_providers=bool(data.get("requires_real_providers", False)),
             source_path=source_path,

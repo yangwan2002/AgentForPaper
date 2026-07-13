@@ -24,7 +24,7 @@ from __future__ import annotations
 import re
 from collections.abc import Iterable
 
-from paper_agent.tools.quality_gate import _TEXT_CITATION, _is_non_citation_marker
+from paper_agent.tools.quality_gate import _TEXT_CITATION, _is_non_citation_marker, extract_text_citations
 from paper_agent.workspace.faithfulness import ClaimCitationPair
 
 # 句子边界字符：CJK 句末标点 + ASCII 句末标点 + 换行/回车（Req 1.3）。
@@ -32,6 +32,16 @@ _SENTENCE_BOUNDARIES = frozenset("。！？.!?\n\r")
 _BIBLIOGRAPHY_HEADING = re.compile(
     r"(?im)^\s*(?:参考文献(?:\s*\(References\))?|References|Bibliography)\s*:?\s*$"
 )
+_NUMERIC_IN_CLAIM = re.compile(r"\d+\.?\d*")
+_HIGH_PRIORITY_TERMS = frozenset(
+    {
+        "实验", "结果", "方法", "模型", "指标", "准确率", "误差", "提升", "降低",
+        "accuracy", "precision", "recall", "error", "improve", "outperform",
+        "method", "experiment", "result", "conclusion", "baseline", "ablation",
+        "slam", "fusion", "localization", "mapping",
+    }
+)
+_METHOD_TOKEN = re.compile(r"\b[A-Z][A-Za-z0-9]{2,}\b|\b[A-Z]{2,}\b")
 
 
 def prepare_claim_text(content: str) -> str:
@@ -52,6 +62,45 @@ def prepare_claim_text(content: str) -> str:
         join_soft_wrap,
         body,
     )
+
+
+def score_claim_priority(claim: str) -> int:
+    """为忠实性审计预算排队：数字/方法名/结论词优先进入判定队列。"""
+    text = (claim or "").strip()
+    if not text:
+        return 0
+    score = 0
+    if _NUMERIC_IN_CLAIM.search(text):
+        score += 4
+    lower = text.lower()
+    for term in _HIGH_PRIORITY_TERMS:
+        if term in lower or term in text:
+            score += 2
+    if _METHOD_TOKEN.search(text):
+        score += 2
+    if any(marker in text for marker in ("显著", "优于", "达到", "相比", "提升", "降低")):
+        score += 1
+    return score
+
+
+def sort_pairs_by_priority(
+    pairs: list[ClaimCitationPair],
+) -> list[ClaimCitationPair]:
+    """按声明优先级降序排列，同分保持抽取顺序稳定。"""
+    return sorted(
+        pairs,
+        key=lambda pair: (
+            -score_claim_priority(pair.claim_sentence),
+            pair.section_id,
+            pair.cited_reference_id,
+            pair.claim_sentence,
+        ),
+    )
+
+
+def cited_reference_ids(content: str) -> set[str]:
+    """正文里出现的引用 id（与 quality_gate 扫描规则一致）。"""
+    return set(extract_text_citations(content or ""))
 
 
 def split_sentences(

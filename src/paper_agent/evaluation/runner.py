@@ -50,6 +50,34 @@ def discover_cases(path: str) -> list[EvalCase]:
     return cases
 
 
+_CASE_CONFIG_FIELDS = {
+    "grounding_fulltext_enabled": bool,
+    "grounding_fulltext_max_refs": int,
+    "faithfulness_max_claims": int,
+    "faithfulness_screen_deadline_s": float,
+    "iteration_limit": int,
+}
+
+
+def _apply_case_config(config: Config, overrides: dict[str, Any]) -> Config:
+    if not overrides:
+        return config
+    values: dict[str, Any] = {}
+    for key, caster in _CASE_CONFIG_FIELDS.items():
+        if key not in overrides:
+            continue
+        raw = overrides[key]
+        if isinstance(raw, bool) or caster is bool:
+            values[key] = bool(raw)
+        elif caster is int:
+            values[key] = int(raw)
+        elif caster is float:
+            values[key] = float(raw)
+        else:
+            values[key] = raw
+    return replace(config, **values)
+
+
 class EvalRunner:
     def __init__(
         self,
@@ -134,11 +162,14 @@ class EvalRunner:
                         usage=_usage_dict(tracker),
                     )
                 raise
-            case_config = replace(
-                self._config,
-                workspace_dir=str(workspace_dir),
-                default_output_format=request.output_format
-                or self._config.default_output_format,
+            case_config = _apply_case_config(
+                replace(
+                    self._config,
+                    workspace_dir=str(workspace_dir),
+                    default_output_format=request.output_format
+                    or self._config.default_output_format,
+                ),
+                case.config,
             )
             store = JsonFileStore(str(workspace_dir))
             sink = JsonLinesSink(

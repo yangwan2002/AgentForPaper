@@ -55,6 +55,27 @@ def test_optional_citation_scope_excludes_authors_downstream_claim():
     assert verified[0].claim_sentence == "同时结合特定视觉特征AprilTags[7]"
 
 
+def test_score_claim_priority_prefers_numeric_and_method_claims():
+    from paper_agent.tools.faithfulness_extract import score_claim_priority
+
+    assert score_claim_priority("该方法在 ORB-SLAM 上达到 0.407 的精度。") > (
+        score_claim_priority("相关研究已有较多讨论。")
+    )
+
+
+def test_sort_pairs_by_priority_orders_high_risk_claims_first():
+    from paper_agent.tools.faithfulness_extract import sort_pairs_by_priority
+    from paper_agent.workspace.faithfulness import ClaimCitationPair
+
+    pairs = [
+        ClaimCitationPair("s", "相关研究已有较多讨论。", "r1"),
+        ClaimCitationPair("s", "实验误差降低至 0.052 m。", "r2"),
+        ClaimCitationPair("s", "SLAM 方法在 AprilTag 上表现更好。", "r3"),
+    ]
+    ordered = sort_pairs_by_priority(pairs)
+    assert ordered[0].cited_reference_id == "r2"
+
+
 def test_content_without_any_markers_returns_two_empty_lists():
     """Req 1.6：无任何 `[id]` 标注的正文 → `([], [])`。"""
     content = "这是一段没有任何引用标注的正文。It contains no bracketed citations at all."
