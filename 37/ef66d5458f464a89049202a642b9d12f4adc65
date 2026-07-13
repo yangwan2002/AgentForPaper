@@ -1,0 +1,23 @@
+src/paper_agent/ingestion/sections.py
+  s_9b19e02a147443::t_bf32e05477ba25 29-45
+  s_9b19e02a147443::t_b9fb232376753b 63-89,102
+  s_9b19e02a147443::t_a334cd48096a6c 184
+tests/test_ingestion.py
+  s_9b19e02a147443::t_7df820c343f630 212-239
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.4.33-trip",
+  "base_commit_sha": "37ef66d5458f464a89049202a642b9d12f4adc65",
+  "prompts": {},
+  "sessions": {
+    "s_9b19e02a147443": {
+      "agent_id": {
+        "tool": "cursor",
+        "id": "02551d0d-bbff-40a6-99f6-c233e0b02891",
+        "model": "default"
+      },
+      "human_author": "yangwan <yangwan@trip.com>"
+    }
+  }
+}
